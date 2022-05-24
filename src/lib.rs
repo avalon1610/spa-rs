@@ -139,7 +139,7 @@ macro_rules! spa_server_root {
     };
     () => {
         StaticFiles
-    }
+    };
 }
 
 pub trait SpaStatic: RustEmbed {
