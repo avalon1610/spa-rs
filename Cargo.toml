@@ -1,0 +1,20 @@
+[package]
+edition = "2021"
+name = "spa-rs"
+version = "0.1.0"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.57"
+async-trait = "0.1.53"
+axum = "0.5.6"
+http = "0.2.7"
+log = "0.4.17"
+rust-embed = {version = "6.4.0", features = ["interpolate-folder-path"]}
+tower = "0.4.12" 
+tower-http = {version = "0.3.3", features = ["fs", "set-header"]}
+
+[dev-dependencies]
+tokio = {version = "1", features = ["rt", "rt-multi-thread", "macros"]}
+env_logger = "0.9.0"
