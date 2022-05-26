@@ -13,17 +13,16 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
 };
-use tower::ServiceExt;
 #[cfg(debug_assertions)]
 use tower_http::cors::{Any, CorsLayer};
-use tower_http::{services::ServeDir, set_header::SetResponseHeaderLayer};
+use tower_http::{
+    services::{ServeDir, ServeFile},
+    set_header::SetResponseHeaderLayer,
+};
 
 pub use axum::*;
+pub use misc;
 pub use rust_embed::RustEmbed;
-
-pub use misc::http_bail;
-pub use misc::http_err;
-pub use misc::http::*;
 
 pub struct SpaServer<T> {
     static_path: Option<(String, PathBuf)>,
@@ -49,16 +48,18 @@ where
     where
         Root: SpaStatic,
     {
-        let embeded_path = root.release()?;
+        let embeded_dir = root.release()?;
+        let index_file = embeded_dir.clone().join("index.html");
 
         #[cfg(debug_assertions)]
         let cors = CorsLayer::new()
             .allow_methods([Method::GET, Method::POST])
+            .expose_headers(Any)
             .allow_headers(Any)
             .allow_origin(Any);
 
         let mut app = Router::new().fallback(
-            get_service(ServeDir::new(&embeded_path))
+            get_service(ServeDir::new(&embeded_dir).fallback(ServeFile::new(&index_file)))
                 .layer(Self::add_cache_control())
                 .handle_error(|e| async move {
                     (
@@ -66,19 +67,9 @@ where
                         format!(
                             "Unhandled internal server error {:?} when serve embeded path {}",
                             e,
-                            embeded_path.display()
+                            embeded_dir.display()
                         ),
                     )
-                })
-                .map_response(|mut response| {
-                    if response.status() == StatusCode::NOT_FOUND {
-                        response
-                            .headers_mut()
-                            .insert(header::LOCATION, HeaderValue::from_static("/"));
-                        *response.status_mut() = StatusCode::TEMPORARY_REDIRECT;
-                    }
-
-                    response
                 }),
         );
 
