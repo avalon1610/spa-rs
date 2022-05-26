@@ -3,6 +3,8 @@ use axum::{
     http::HeaderValue,
     routing::{get_service, Router},
 };
+#[cfg(debug_assertions)]
+use http::Method;
 use http::{header, StatusCode};
 use log::{debug, error, warn};
 use std::{
@@ -12,10 +14,16 @@ use std::{
     path::{Path, PathBuf},
 };
 use tower::ServiceExt;
+#[cfg(debug_assertions)]
+use tower_http::cors::{Any, CorsLayer};
 use tower_http::{services::ServeDir, set_header::SetResponseHeaderLayer};
 
 pub use axum::*;
 pub use rust_embed::RustEmbed;
+
+pub use misc::http_bail;
+pub use misc::http_err;
+pub use misc::http::*;
 
 pub struct SpaServer<T> {
     static_path: Option<(String, PathBuf)>,
@@ -42,6 +50,13 @@ where
         Root: SpaStatic,
     {
         let embeded_path = root.release()?;
+
+        #[cfg(debug_assertions)]
+        let cors = CorsLayer::new()
+            .allow_methods([Method::GET, Method::POST])
+            .allow_headers(Any)
+            .allow_origin(Any);
+
         let mut app = Router::new().fallback(
             get_service(ServeDir::new(&embeded_path))
                 .layer(Self::add_cache_control())
@@ -59,7 +74,7 @@ where
                     if response.status() == StatusCode::NOT_FOUND {
                         response
                             .headers_mut()
-                            .insert(header::LOCATION, HeaderValue::from_static("/index.html"));
+                            .insert(header::LOCATION, HeaderValue::from_static("/"));
                         *response.status_mut() = StatusCode::TEMPORARY_REDIRECT;
                     }
 
@@ -87,6 +102,11 @@ where
 
         for route in self.routes {
             app = app.nest(&route.0, route.1);
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            app = app.layer(cors)
         }
 
         if let Some(data) = self.data {
