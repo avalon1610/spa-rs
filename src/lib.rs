@@ -23,8 +23,9 @@ use tower_http::{
 pub use axum::*;
 pub use misc;
 pub use rust_embed::RustEmbed;
+pub mod session;
 
-pub struct SpaServer<T> {
+pub struct SpaServer<T = ()> {
     static_path: Option<(String, PathBuf)>,
     data: Option<T>,
     port: u16,
@@ -35,6 +36,13 @@ impl<T> SpaServer<T>
 where
     T: Clone + Sync + Send + 'static,
 {
+    pub fn data(mut self, data: T) -> Self {
+        self.data = Some(data);
+        self
+    }
+}
+
+impl SpaServer {
     pub fn new() -> Self {
         Self {
             static_path: None,
@@ -118,11 +126,6 @@ where
 
     pub fn port(mut self, port: u16) -> Self {
         self.port = port;
-        self
-    }
-
-    pub fn data(mut self, data: T) -> Self {
-        self.data = Some(data);
         self
     }
 

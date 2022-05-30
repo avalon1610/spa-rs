@@ -9,7 +9,6 @@ async fn main() -> Result<()> {
     env_logger::init();
 
     SpaServer::new()
-        .data(123)
         .port(3001)
         .static_path("/png", "web")
         .route(
