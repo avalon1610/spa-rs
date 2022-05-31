@@ -8,15 +8,12 @@ spa_server_root!("web/dist");
 async fn main() -> Result<()> {
     env_logger::init();
 
-    SpaServer::new()
-        .port(3001)
-        .static_path("/png", "web")
-        .route(
-            "/api",
-            Router::new().route("/get", get(|| async { "get works" })),
-        )
-        .run(spa_server_root!())
-        .await?;
+    let mut srv = SpaServer::new();
+    srv.port(3001).static_path("/png", "web").route(
+        "/api",
+        Router::new().route("/get", get(|| async { "get works" })),
+    );
+    srv.run(spa_server_root!()).await?;
 
     Ok(())
 }

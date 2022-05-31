@@ -1,12 +1,16 @@
 use anyhow::Result;
 use axum::{
+    handler::Handler,
     http::HeaderValue,
+    response::IntoResponse,
     routing::{get_service, Router},
 };
 #[cfg(debug_assertions)]
 use http::Method;
-use http::{header, StatusCode};
+use http::{header, StatusCode, Uri};
 use log::{debug, error, warn};
+#[cfg(feature = "proxy")]
+use misc::http::HttpResult;
 use std::{
     env::temp_dir,
     fs::{self, create_dir_all},
@@ -30,6 +34,7 @@ pub struct SpaServer<T = ()> {
     data: Option<T>,
     port: u16,
     routes: Vec<(String, Router)>,
+    forward: Option<Uri>,
 }
 
 impl<T> SpaServer<T>
@@ -42,6 +47,39 @@ where
     }
 }
 
+#[cfg(feature = "proxy")]
+async fn forwarded_to_dev(
+    Extension(proxy_uri): Extension<Uri>,
+    uri: Uri,
+    method: Method,
+) -> HttpResult<impl IntoResponse> {
+    use axum::{body::Full, response::Response};
+    use misc::http::HttpError;
+
+    if method == Method::GET {
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let url = format!(
+            "{}{}",
+            proxy_uri.to_string().trim_end_matches('/'),
+            uri.to_string()
+        );
+        let response = client.get(url).send().await?;
+        let status = response.status();
+        let headers = response.headers().clone();
+        let bytes = response.bytes().await?;
+
+        let mut response = Response::builder().status(status);
+        *(response.headers_mut().unwrap()) = headers;
+        let response = response.body(Full::from(bytes))?;
+        return Ok(response);
+    }
+
+    Err(HttpError {
+        message: "Method not allowed".to_string(),
+        status_code: StatusCode::METHOD_NOT_ALLOWED,
+    })
+}
+
 impl SpaServer {
     pub fn new() -> Self {
         Self {
@@ -49,7 +87,17 @@ impl SpaServer {
             data: None,
             port: 8080,
             routes: Vec::new(),
+            forward: None,
         }
+    }
+
+    /// make a reverse proxy which redirect all SPA requests to dev server, such as `ng serve`, `vite`.  
+    ///
+    /// it's useful when debugging UI
+    #[cfg(feature = "proxy")]
+    pub fn proxy(&mut self, uri: Uri) -> &mut Self {
+        self.forward = Some(uri);
+        self
     }
 
     pub async fn run<Root>(self, root: Root) -> Result<()>
@@ -66,20 +114,33 @@ impl SpaServer {
             .allow_headers(Any)
             .allow_origin(Any);
 
-        let mut app = Router::new().fallback(
-            get_service(ServeDir::new(&embeded_dir).fallback(ServeFile::new(&index_file)))
-                .layer(Self::add_cache_control())
-                .handle_error(|e| async move {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!(
-                            "Unhandled internal server error {:?} when serve embeded path {}",
-                            e,
-                            embeded_dir.display()
-                        ),
-                    )
-                }),
-        );
+        let mut app = Router::new();
+        app = if let Some(uri) = self.forward {
+            #[cfg(feature = "proxy")]
+            {
+                app.fallback(forwarded_to_dev.into_service())
+                    .layer(Extension(uri))
+            }
+            #[cfg(not(feature = "proxy"))]
+            {
+                app
+            }
+        } else {
+            app.fallback(
+                get_service(ServeDir::new(&embeded_dir).fallback(ServeFile::new(&index_file)))
+                    .layer(Self::add_cache_control())
+                    .handle_error(|e| async move {
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!(
+                                "Unhandled internal server error {:?} when serve embeded path {}",
+                                e,
+                                embeded_dir.display()
+                            ),
+                        )
+                    }),
+            )
+        };
 
         if let Some(sf) = self.static_path {
             app = app.nest(
@@ -119,17 +180,17 @@ impl SpaServer {
         Ok(())
     }
 
-    pub fn route(mut self, path: impl Into<String>, router: Router) -> Self {
+    pub fn route(&mut self, path: impl Into<String>, router: Router) -> &mut Self {
         self.routes.push((path.into(), router));
         self
     }
 
-    pub fn port(mut self, port: u16) -> Self {
+    pub fn port(&mut self, port: u16) -> &mut Self {
         self.port = port;
         self
     }
 
-    pub fn static_path(mut self, path: impl Into<String>, dir: impl Into<PathBuf>) -> Self {
+    pub fn static_path(&mut self, path: impl Into<String>, dir: impl Into<PathBuf>) -> &mut Self {
         self.static_path = Some((path.into(), dir.into()));
         self
     }
