@@ -4,6 +4,7 @@ use http_body::Body;
 use parking_lot::RwLock;
 use pin_project_lite::pin_project;
 use std::{
+    cmp::PartialEq,
     collections::HashMap,
     future::Future,
     sync::Arc,
@@ -23,12 +24,18 @@ impl<S, T> RequireSession<S, T> {
     }
 }
 
+#[derive(Clone)]
+pub struct Session<T> {
+    pub current: T,
+    pub all: Arc<SessionStore<T>>,
+}
+
 pub struct SessionStore<T> {
     key: String,
     inner: RwLock<HashMap<String, T>>,
 }
 
-impl<T> SessionStore<T> {
+impl<T: PartialEq> SessionStore<T> {
     pub fn new(key: impl Into<String>) -> Self {
         SessionStore {
             key: key.into(),
@@ -40,8 +47,12 @@ impl<T> SessionStore<T> {
         &self.key
     }
 
-    pub fn data(&self) -> &RwLock<HashMap<String, T>> {
-        &self.inner
+    pub fn insert(&self, k: impl Into<String>, v: T) {
+        self.inner.write().insert(k.into(), v);
+    }
+
+    pub fn remove(&self, v: T) {
+        self.inner.write().retain(|_, x| *x != v);
     }
 }
 
@@ -150,7 +161,10 @@ where
             for (k, v) in cookie.iter() {
                 if k == self.store.key {
                     if let Some(u) = sessions.get(v) {
-                        req.extensions_mut().insert((u.clone(), self.store.clone()));
+                        req.extensions_mut().insert(Session {
+                            current: u.clone(),
+                            all: self.store.clone(),
+                        });
                         return ResponseFuture::Future {
                             future: self.inner.call(req),
                         };

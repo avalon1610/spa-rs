@@ -29,22 +29,12 @@ pub use misc;
 pub use rust_embed::RustEmbed;
 pub mod session;
 
-pub struct SpaServer<T = ()> {
+pub struct SpaServer<T> {
     static_path: Option<(String, PathBuf)>,
     data: Option<T>,
     port: u16,
     routes: Vec<(String, Router)>,
     forward: Option<Uri>,
-}
-
-impl<T> SpaServer<T>
-where
-    T: Clone + Sync + Send + 'static,
-{
-    pub fn data(mut self, data: T) -> Self {
-        self.data = Some(data);
-        self
-    }
 }
 
 #[cfg(feature = "proxy")]
@@ -80,7 +70,10 @@ async fn forwarded_to_dev(
     })
 }
 
-impl SpaServer {
+impl<T> SpaServer<T>
+where
+    T: Clone + Sync + Send + 'static,
+{
     pub fn new() -> Self {
         Self {
             static_path: None,
@@ -89,6 +82,11 @@ impl SpaServer {
             routes: Vec::new(),
             forward: None,
         }
+    }
+
+    pub fn data(&mut self, data: T) -> &mut Self {
+        self.data = Some(data);
+        self
     }
 
     /// make a reverse proxy which redirect all SPA requests to dev server, such as `ng serve`, `vite`.  
