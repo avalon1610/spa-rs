@@ -1,0 +1,13 @@
+[package]
+edition = "2021"
+name = "axum-help"
+version = "0.1.0"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+axum = {version = "0.5.6", features = ["headers"]}
+http = "0.2.7"
+pin-project-lite = "0.2.9"
+tower = "0.4.12"
+futures-core = "0.3"
