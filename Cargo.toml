@@ -11,7 +11,7 @@ license = "MIT"
 anyhow = "1.0.57"
 async-trait = "0.1.53"
 axum = {version = "0.5.6", features = ["headers", "multipart", "ws"]}
-axum-help = {path = './axum-help'}
+axum-help = "0.1"
 http = "0.2.7"
 http-body = "0.4.5"
 log = "0.4.17"
