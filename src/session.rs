@@ -1,35 +1,26 @@
+//! A tower middleware who can reading and writing session data from Cookie.
+//!
+use crate::filter::Predicate;
 use axum::headers::{Cookie, HeaderMapExt};
 use http::{Request, Response, StatusCode};
-use http_body::Body;
 use parking_lot::RwLock;
-use pin_project_lite::pin_project;
-use std::{
-    cmp::PartialEq,
-    collections::HashMap,
-    future::Future,
-    sync::Arc,
-    task::{Context, Poll},
-};
-use tower::{Layer, Service};
+use std::{cmp::PartialEq, collections::HashMap, sync::Arc};
 
-#[derive(Clone)]
-pub struct RequireSession<S, T> {
-    inner: S,
-    store: Arc<SessionStore<T>>,
-}
-
-impl<S, T> RequireSession<S, T> {
-    pub fn new(inner: S, store: Arc<SessionStore<T>>) -> Self {
-        RequireSession { inner, store }
-    }
-}
-
+/// Session object, can access by Extension in RequireSession layer.
+/// 
+/// See [RequireSession] example for usage
 #[derive(Clone)]
 pub struct Session<T> {
+    /// current session data
     pub current: T,
+    /// session storage
     pub all: Arc<SessionStore<T>>,
 }
 
+/// Session storage, can access by Extersion in AddSession layer.
+/// 
+/// See [AddSession] example for usage
+#[derive(Debug)]
 pub struct SessionStore<T> {
     key: String,
     inner: RwLock<HashMap<String, T>>,
@@ -56,129 +47,121 @@ impl<T: PartialEq> SessionStore<T> {
     }
 }
 
-pub struct AddSessionLayer<T>(Arc<SessionStore<T>>);
+/// Middleware that can access and modify all sessions data. Usually used for **Login** handler
+///
+/// # Example
+///```
+/// # use spa_rs::routing::{post, Router};
+/// # use spa_rs::Extension;
+/// # use spa_rs::session::AddSession;
+/// # use spa_rs::session::SessionStore;
+/// # use axum_help::filter::FilterExLayer;
+/// # use std::sync::Arc;
+/// #
+/// #[derive(PartialEq, Clone)]
+/// struct User;
+///
+/// async fn login(Extension(session): Extension<Arc<SessionStore<User>>>) {
+///     let new_user = User;
+///     session.insert("session_id", new_user);
+/// }
+/// 
+/// #[tokio::main]
+/// async fn main() {
+///     let session = Arc::new(SessionStore::<User>::new("my_session"));
+///     let app = Router::new()
+///         .route("/login", post(login))
+///         .layer(FilterExLayer::new(AddSession::new(session.clone())));
+/// #   axum::Server::bind(&"0.0.0.0:3000".parse().unwrap()).serve(app.into_make_service());
+/// }
+///```
+#[derive(Clone, Debug)]
+pub struct AddSession<T>(Arc<SessionStore<T>>);
 
-impl<T> AddSessionLayer<T> {
+impl<T> AddSession<T> {
     pub fn new(store: Arc<SessionStore<T>>) -> Self {
         Self(store)
     }
 }
 
-#[derive(Clone)]
-pub struct AddSession<S, T> {
-    inner: S,
-    store: Arc<SessionStore<T>>,
-}
-
-impl<S, T> Layer<S> for AddSessionLayer<T> {
-    type Service = AddSession<S, T>;
-
-    fn layer(&self, inner: S) -> Self::Service {
-        AddSession {
-            inner,
-            store: self.0.clone(),
-        }
-    }
-}
-
-impl<S, T, ReqBody, ResBody> Service<Request<ReqBody>> for AddSession<S, T>
+impl<T, ResBody, ReqBody> Predicate<Request<ReqBody>, ResBody> for AddSession<T>
 where
     T: Send + Sync + 'static,
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
 {
-    type Response = S::Response;
-    type Error = S::Error;
-    type Future = S::Future;
+    type Request = Request<ReqBody>;
+    type Response = Response<ResBody>;
 
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready(cx)
-    }
-
-    fn call(&mut self, mut req: Request<ReqBody>) -> Self::Future {
-        req.extensions_mut().insert(self.store.clone());
-        self.inner.call(req)
+    fn check(&mut self, mut request: Request<ReqBody>) -> Result<Self::Request, Self::Response> {
+        request.extensions_mut().insert(self.0.clone());
+        Ok(request)
     }
 }
 
-pub struct RequireSessionLayer<T>(Arc<SessionStore<T>>);
+/// Middleware that can access and modify all sessions data.
+///
+/// # Example
+///```
+/// # use spa_rs::routing::{post, Router};
+/// # use spa_rs::Extension;
+/// # use spa_rs::session::RequireSession;
+/// # use spa_rs::session::SessionStore;
+/// # use spa_rs::session::Session;
+/// # use axum_help::filter::FilterExLayer;
+/// # use std::sync::Arc;
+/// #
+/// #[derive(PartialEq, Clone, Debug)]
+/// struct User;
+///
+/// async fn action(Extension(session): Extension<Arc<Session<User>>>) {
+///     println!("current user: {:?}", session.current);
+/// }
+///
+/// #[tokio::main]
+/// async fn main() {
+///     let session = Arc::new(SessionStore::<User>::new("my_session"));
+///     let app = Router::new()
+///         .route("/action", post(action))
+///         .layer(FilterExLayer::new(RequireSession::new(session.clone())));
+/// #   axum::Server::bind(&"0.0.0.0:3000".parse().unwrap()).serve(app.into_make_service());
+/// }
+///```
+#[derive(Clone, Debug)]
+pub struct RequireSession<T>(Arc<SessionStore<T>>);
 
-impl<T> RequireSessionLayer<T> {
+impl<T> RequireSession<T> {
     pub fn new(store: Arc<SessionStore<T>>) -> Self {
         Self(store)
     }
 }
 
-impl<S, T> Layer<S> for RequireSessionLayer<T> {
-    type Service = RequireSession<S, T>;
-
-    fn layer(&self, inner: S) -> Self::Service {
-        RequireSession::new(inner, self.0.clone())
-    }
-}
-
-pin_project! {
-    #[project = ResponseKind]
-    pub enum ResponseFuture<F, B> {
-        Future {#[pin] future: F },
-        Error { response: Option<Response<B>> },
-    }
-}
-
-impl<F, B, E> Future for ResponseFuture<F, B>
-where
-    F: Future<Output = Result<Response<B>, E>>,
-{
-    type Output = F::Output;
-
-    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.project() {
-            ResponseKind::Future { future } => future.poll(cx),
-            ResponseKind::Error { response } => {
-                let response = response.take().unwrap();
-                Poll::Ready(Ok(response))
-            }
-        }
-    }
-}
-
-impl<S, ReqBody, ResBody, T> Service<Request<ReqBody>> for RequireSession<S, T>
+impl<T, ResBody, ReqBody> Predicate<Request<ReqBody>, ResBody> for RequireSession<T>
 where
     T: Clone + Send + Sync + 'static,
-    ResBody: Default + Body,
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    ResBody: Default,
 {
-    type Response = S::Response;
-    type Error = S::Error;
-    type Future = ResponseFuture<S::Future, ResBody>;
+    type Request = Request<ReqBody>;
+    type Response = Response<ResBody>;
 
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready(cx)
-    }
-
-    fn call(&mut self, mut req: Request<ReqBody>) -> Self::Future {
-        if let Some(cookie) = req.headers().typed_get::<Cookie>() {
-            let sessions = self.store.inner.read();
+    fn check(&mut self, mut request: Request<ReqBody>) -> Result<Self::Request, Self::Response> {
+        if let Some(cookie) = request.headers().typed_get::<Cookie>() {
+            let sessions = self.0.inner.read();
             for (k, v) in cookie.iter() {
-                if k == self.store.key {
+                if k == self.0.key {
                     if let Some(u) = sessions.get(v) {
-                        req.extensions_mut().insert(Session {
+                        request.extensions_mut().insert(Session {
                             current: u.clone(),
-                            all: self.store.clone(),
+                            all: self.0.clone(),
                         });
-                        return ResponseFuture::Future {
-                            future: self.inner.call(req),
-                        };
+                        return Ok(request);
                     }
                 }
             }
         }
 
-        ResponseFuture::Error {
-            response: Some({
-                let mut response = Response::new(ResBody::default());
-                *response.status_mut() = StatusCode::UNAUTHORIZED;
-                response
-            }),
-        }
+        Err({
+            let mut response = Response::default();
+            *response.status_mut() = StatusCode::UNAUTHORIZED;
+            response
+        })
     }
 }
