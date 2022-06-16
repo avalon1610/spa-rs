@@ -7,7 +7,7 @@ use parking_lot::RwLock;
 use std::{cmp::PartialEq, collections::HashMap, sync::Arc};
 
 /// Session object, can access by Extension in RequireSession layer.
-/// 
+///
 /// See [RequireSession] example for usage
 #[derive(Clone)]
 pub struct Session<T> {
@@ -18,7 +18,7 @@ pub struct Session<T> {
 }
 
 /// Session storage, can access by Extersion in AddSession layer.
-/// 
+///
 /// See [AddSession] example for usage
 #[derive(Debug)]
 pub struct SessionStore<T> {
@@ -65,7 +65,7 @@ impl<T: PartialEq> SessionStore<T> {
 ///     let new_user = User;
 ///     session.insert("session_id", new_user);
 /// }
-/// 
+///
 /// #[tokio::main]
 /// async fn main() {
 ///     let session = Arc::new(SessionStore::<User>::new("my_session"));

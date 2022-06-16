@@ -10,3 +10,4 @@ axum = {version = "0.5.6", features = ["headers"]}
 http = "0.2.7"
 pin-project-lite = "0.2.9"
 tower = "0.4.12"
+futures-core = "0.3"
