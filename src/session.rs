@@ -27,6 +27,7 @@ pub struct SessionStore<T> {
 }
 
 impl<T: PartialEq> SessionStore<T> {
+    /// return new SessionStore with specific key
     pub fn new(key: impl Into<String>) -> Self {
         SessionStore {
             key: key.into(),
@@ -34,14 +35,17 @@ impl<T: PartialEq> SessionStore<T> {
         }
     }
 
+    /// get the key reference
     pub fn key(&self) -> &str {
         &self.key
     }
 
+    /// insert a new session item
     pub fn insert(&self, k: impl Into<String>, v: T) {
         self.inner.write().insert(k.into(), v);
     }
 
+    /// remove the session item
     pub fn remove(&self, v: T) {
         self.inner.write().retain(|_, x| *x != v);
     }

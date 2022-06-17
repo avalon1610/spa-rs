@@ -1,8 +1,10 @@
 [package]
 edition = "2021"
 name = "axum-help"
-version = "0.1.0"
-description = "series enhancements for axum"
+homepage = "https://github.com/avalon1610/spa-rs"
+repository = "https://github.com/avalon1610/spa-rs"
+version = "0.1.1"
+description = "Series enhancements for axum"
 license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
