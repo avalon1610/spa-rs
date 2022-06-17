@@ -35,7 +35,7 @@ use std::{
     marker::PhantomData,
     task::{Context, Poll},
 };
-use tower::{util::Either, Service};
+use tower::Service;
 
 mod future;
 mod layer;
@@ -137,6 +137,16 @@ pub struct AsyncFilterEx<T, U, B> {
     p: PhantomData<B>,
 }
 
+impl<T: Clone, U: Clone, B> Clone for AsyncFilterEx<T, U, B> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            predicate: self.predicate.clone(),
+            p: PhantomData,
+        }
+    }
+}
+
 impl<T, U, B> AsyncFilterEx<T, U, B> {
     /// Returns a new [AsyncFilterEx] service wrapping `inner`.
     pub fn new(inner: T, predicate: U) -> Self {
@@ -184,11 +194,11 @@ where
     U: AsyncPredicate<Request<ReqBody>, ResBody, Response = Response<ResBody>>,
 {
     type Response = T::Response;
-    type Error = Either<U::Response, T::Error>;
+    type Error = T::Error;
     type Future = AsyncResponseFuture<U, T, Request<ReqBody>, ResBody>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready(cx).map_err(|e| Either::B(e))
+        self.inner.poll_ready(cx)
     }
 
     fn call(&mut self, req: Request<ReqBody>) -> Self::Future {

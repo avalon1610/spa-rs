@@ -7,7 +7,7 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
 };
-use tower::{util::Either, Service};
+use tower::Service;
 
 pin_project! {
     /// Filtered response future from [`FilterEx`] services.
@@ -38,7 +38,7 @@ where
 
 pin_project! {
     /// Filtered response future from [`AsyncFilterEx`](super::AsyncFilterEx) services.
-    /// 
+    ///
     pub struct AsyncResponseFuture<P, S, R, B>
     where
         P: AsyncPredicate<R, B>,
@@ -77,9 +77,9 @@ where
 impl<P, S, R, B> Future for AsyncResponseFuture<P, S, R, B>
 where
     P: AsyncPredicate<R, B>,
-    S: Service<P::Request>,
+    S: Service<P::Request, Response = <P as AsyncPredicate<R, B>>::Response>,
 {
-    type Output = Result<S::Response, Either<P::Response, S::Error>>;
+    type Output = Result<S::Response, S::Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.project();
@@ -92,15 +92,12 @@ where
                         this.state.set(State::WaitResponse { response });
                     }
                     Err(e) => {
-                        return Poll::Ready(Err(Either::A(e)));
+                        return Poll::Ready(Ok(e));
                     }
                 },
 
                 StateProj::WaitResponse { response } => {
-                    return Poll::Ready(match ready!(response.poll(cx)) {
-                        Ok(response) => Ok(response),
-                        Err(e) => Err(Either::B(e)),
-                    });
+                    return response.poll(cx);
                 }
             }
         }

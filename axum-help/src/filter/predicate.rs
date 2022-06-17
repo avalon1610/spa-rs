@@ -1,6 +1,29 @@
 use std::future::Future;
 
 /// Checks a request synchronously
+/// 
+/// 
+/// # Example
+/// ```
+/// # use axum_help::filter::Predicate;
+/// # use http::Response;
+/// # use http::Request;
+/// #
+/// struct CheckService;
+/// 
+/// impl<ResBody, ReqBody> Predicate<Request<ReqBody>, ResBody> for CheckService
+/// where
+///     ResBody: Default,
+/// {
+///     type Request = Request<ReqBody>;
+///     type Response = Response<ResBody>;
+/// 
+///     fn check(&mut self, mut request: Request<ReqBody>) -> Result<Self::Request, Self::Response> {
+///         // do something check
+///         Ok(request)   
+///     }
+/// }
+/// ```
 pub trait Predicate<Request, B> {
     /// The type of requests returned by [`check`](Predicate::check).
     ///
@@ -30,6 +53,34 @@ where
 }
 
 /// Checks a request asynchronously
+///
+/// # Example
+/// ```
+/// # use axum_help::filter::AsyncPredicate;
+/// # use http::Request;
+/// # use axum::response::Response;
+/// # use std::pin::Pin;
+/// # use std::future::Future;
+/// #
+/// struct CheckService;
+/// 
+/// impl<ReqBody, ResBody> AsyncPredicate<Request<ReqBody>, ResBody> for CheckService
+/// where
+///     ReqBody: Send + 'static,
+///     ResBody: Default + Send + 'static,
+/// {
+///     type Request = Request<ReqBody>;
+///     type Response = Response<ResBody>;
+///     type Future = Pin<Box<dyn Future<Output = Result<Self::Request, Self::Response>> + Send>>;
+/// 
+///     fn check(&mut self, request: Request<ReqBody>) -> Self::Future {
+///         Box::pin(async move {
+///             // do something check
+///             Ok(request)
+///         })
+///     }
+/// }
+/// ```
 pub trait AsyncPredicate<Request, B> {
     /// The type of requests returned by [`check`](AsyncPredicate::check)
     ///
