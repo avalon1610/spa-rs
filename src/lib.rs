@@ -1,8 +1,8 @@
-//! spa-rs is a library who can embed all SPA web application files (dist static file), 
+//! spa-rs is a library who can embed all SPA web application files (dist static file),
 //! and release as a single binary executable.
-//! 
+//!
 //! It based-on [axum] and [rust_embed]
-//! 
+//!
 //! It reexported all axum module for convenient use.
 //! # Example
 //! ```no_run
@@ -10,9 +10,9 @@
 //! use spa_rs::SpaServer;
 //! use spa_rs::routing::{get, Router};
 //! use anyhow::Result;
-//! 
+//!
 //! spa_server_root!("web/dist");           // specific your SPA dist file location
-//! 
+//!
 //! #[tokio::main]
 //! async fn main() -> Result<()> {
 //!     let data = String::new();           // server context can be acccess by [axum::Extension]
@@ -25,20 +25,20 @@
 //!         )
 //!     );
 //!     srv.run(spa_server_root!()).await?;  
-//! 
+//!
 //!     Ok(())
 //! }
 //! ```
-//! 
+//!
 //! # Session
 //! See [session] module for more detail.
 //!
-//! # Dev 
+//! # Dev
 //! When writing SPA application, you may want use hot-reload functionallity provided
-//! by SPA framework. such as [`vite dev`] or [`ng serve`]. 
-//! 
+//! by SPA framework. such as [`vite dev`] or [`ng serve`].
+//!
 //! You can use spa-rs to reverse proxy all static requests to SPA framework. (need enable `reverse-proxy` feature)
-//! 
+//!
 //! ## Example
 //! ```ignore
 //!   let forward_addr = "http://localhost:1234";
@@ -73,14 +73,14 @@ pub use rust_embed::RustEmbed;
 pub mod session;
 pub use axum_help::*;
 
-/// A server wrapped axum server. 
-/// 
+/// A server wrapped axum server.
+///
 /// It can:
 /// - serve static files in SPA root path
 /// - serve API requests in router
 /// - fallback to SPA static file when route matching failed
 ///     - if still get 404, it will redirect to SPA index.html
-/// 
+///
 #[derive(Default)]
 pub struct SpaServer<T> {
     static_path: Option<(String, PathBuf)>,
@@ -88,6 +88,7 @@ pub struct SpaServer<T> {
     port: u16,
     routes: Vec<(String, Router)>,
     forward: Option<Uri>,
+    release_path: PathBuf,
 }
 
 #[cfg(feature = "reverse-proxy")]
@@ -139,11 +140,12 @@ where
             port: 8080,
             routes: Vec::new(),
             forward: None,
+            release_path: temp_dir().join(format!("{}_static_files", env!("CARGO_PKG_NAME"))),
         }
     }
 
     /// Specific server context data
-    /// 
+    ///
     /// This is similar to [axum middleware](https://docs.rs/axum/latest/axum/#middleware)
     pub fn data(&mut self, data: T) -> &mut Self {
         self.data = Some(data);
@@ -160,12 +162,20 @@ where
         self
     }
 
+    /// static file release path in runtime
+    ///
+    /// Default path is /tmp/[env!(CARGO_PKG_NAME)]_static_files
+    pub fn release_path(&mut self, rp: impl Into<PathBuf>) -> &mut Self {
+        self.release_path = rp.into();
+        self
+    }
+
     /// Run the spa server forever
     pub async fn run<Root>(self, root: Root) -> Result<()>
     where
         Root: SpaStatic,
     {
-        let embeded_dir = root.release()?;
+        let embeded_dir = root.release(self.release_path)?;
         let index_file = embeded_dir.clone().join("index.html");
 
         let mut app = Router::new();
@@ -223,21 +233,21 @@ where
     }
 
     /// Setting up server router, see example for usage.
-    /// 
+    ///
     pub fn route(&mut self, path: impl Into<String>, router: Router) -> &mut Self {
         self.routes.push((path.into(), router));
         self
     }
 
     /// Server listening port, default is 8080
-    /// 
+    ///
     pub fn port(&mut self, port: u16) -> &mut Self {
         self.port = port;
         self
     }
 
-    /// Setting up a runtime static file path. 
-    /// 
+    /// Setting up a runtime static file path.
+    ///
     /// Unlike [spa_server_root], file in this path can be changed in runtime.
     pub fn static_path(&mut self, path: impl Into<String>, dir: impl Into<PathBuf>) -> &mut Self {
         self.static_path = Some((path.into(), dir.into()));
@@ -253,7 +263,7 @@ where
 }
 
 /// Specific SPA dist file root path in compile time
-/// 
+///
 #[macro_export]
 macro_rules! spa_server_root {
     ($root: literal) => {
@@ -269,10 +279,10 @@ macro_rules! spa_server_root {
 }
 
 /// Used to release static file into temp dir in runtime.
-/// 
+///
 pub trait SpaStatic: RustEmbed {
-    fn release(&self) -> Result<PathBuf> {
-        let target_dir = temp_dir().join(format!("{}_static_files", env!("CARGO_PKG_NAME")));
+    fn release(&self, release_path: PathBuf) -> Result<PathBuf> {
+        let target_dir = release_path;
         if !target_dir.exists() {
             create_dir_all(&target_dir)?;
         }
