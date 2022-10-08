@@ -16,8 +16,8 @@
 //! #[tokio::main]
 //! async fn main() -> Result<()> {
 //!     let data = String::new();           // server context can be acccess by [axum::Extension]
-//!     let mut srv = SpaServer::new();
-//!     srv.port(3000)
+//!     let mut srv = SpaServer::new()
+//!         .port(3000)
 //!         .data(data)
 //!         .static_path("/png", "web")     // static file generated in runtime
 //!         .route("/api", Router::new()
@@ -48,20 +48,25 @@ use anyhow::Result;
 #[cfg(feature = "reverse-proxy")]
 use axum::response::IntoResponse;
 use axum::{
+    body::Bytes,
+    body::{Body, HttpBody},
     handler::Handler,
     http::HeaderValue,
-    routing::{get_service, Router},
+    response::Response,
+    routing::{get_service, Route, Router},
 };
 #[cfg(feature = "reverse-proxy")]
 use http::Method;
-use http::{header, StatusCode, Uri};
+use http::{header, Request, StatusCode, Uri};
 use log::{debug, error, warn};
 use std::{
+    convert::Infallible,
     env::temp_dir,
     fs::{self, create_dir_all},
     net::SocketAddr,
     path::{Path, PathBuf},
 };
+use tower::{Layer, Service};
 use tower_http::{
     services::{ServeDir, ServeFile},
     set_header::SetResponseHeaderLayer,
@@ -70,6 +75,7 @@ use tower_http::{
 pub use axum::*;
 pub use rust_embed::RustEmbed;
 
+pub mod auth;
 pub mod session;
 pub use axum_help::*;
 
@@ -82,11 +88,10 @@ pub use axum_help::*;
 ///     - if still get 404, it will redirect to SPA index.html
 ///
 #[derive(Default)]
-pub struct SpaServer<T> {
+pub struct SpaServer {
     static_path: Option<(String, PathBuf)>,
-    data: Option<T>,
     port: u16,
-    routes: Vec<(String, Router)>,
+    app: Router,
     forward: Option<Uri>,
     release_path: PathBuf,
 }
@@ -97,7 +102,7 @@ async fn forwarded_to_dev(
     uri: Uri,
     method: Method,
 ) -> HttpResult<impl IntoResponse> {
-    use axum::{body::Full, response::Response};
+    use axum::body::Full;
 
     if method == Method::GET {
         let client = reqwest::Client::builder().no_proxy().build()?;
@@ -128,17 +133,15 @@ async fn forwarded_to_dev() {
     unreachable!("reverse-proxy not enabled, should never call forwarded_to_dev")
 }
 
-impl<T> SpaServer<T>
-where
-    T: Clone + Sync + Send + 'static,
-{
+impl SpaServer {
     /// Just new(), nothing special
     pub fn new() -> Self {
         Self {
             static_path: None,
-            data: None,
+            // data: None,
             port: 8080,
-            routes: Vec::new(),
+            app: Router::new(),
+            // routes: Vec::new(),
             forward: None,
             release_path: temp_dir().join(format!("{}_static_files", env!("CARGO_PKG_NAME"))),
         }
@@ -147,8 +150,29 @@ where
     /// Specific server context data
     ///
     /// This is similar to [axum middleware](https://docs.rs/axum/latest/axum/#middleware)
-    pub fn data(&mut self, data: T) -> &mut Self {
-        self.data = Some(data);
+    pub fn data<T>(mut self, data: T) -> Self
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        self.app = self.app.layer(Extension(data));
+        self
+    }
+
+    /// Specific an axum layer to server
+    /// 
+    /// This is similar to [axum middleware](https://docs.rs/axum/latest/axum/#middleware)
+    pub fn layer<L, B, NewResBody>(mut self, layer: L) -> Self
+    where
+        L: Layer<Route>,
+        L::Service: Service<Request<Body>, Response = Response<NewResBody>, Error = Infallible>
+            + Clone
+            + Send
+            + 'static,
+        <L::Service as Service<Request<Body>>>::Future: Send + 'static,
+        NewResBody: HttpBody<Data = Bytes> + Send + 'static,
+        NewResBody::Error: Into<BoxError>,
+    {
+        self.app = self.app.layer(layer);
         self
     }
 
@@ -157,7 +181,7 @@ where
     /// it's useful when debugging UI
     #[cfg(feature = "reverse-proxy")]
     #[cfg_attr(docsrs, doc(cfg(feature = "reverse-proxy")))]
-    pub fn reverse_proxy(&mut self, uri: Uri) -> &mut Self {
+    pub fn reverse_proxy(mut self, uri: Uri) -> Self {
         self.forward = Some(uri);
         self
     }
@@ -165,7 +189,7 @@ where
     /// static file release path in runtime
     ///
     /// Default path is /tmp/[env!(CARGO_PKG_NAME)]_static_files
-    pub fn release_path(&mut self, rp: impl Into<PathBuf>) -> &mut Self {
+    pub fn release_path(mut self, rp: impl Into<PathBuf>) -> Self {
         self.release_path = rp.into();
         self
     }
@@ -217,14 +241,6 @@ where
             )
         }
 
-        for route in self.routes {
-            app = app.nest(&route.0, route.1);
-        }
-
-        if let Some(data) = self.data {
-            app = app.layer(Extension(data));
-        }
-
         Server::bind(&format!("0.0.0.0:{}", self.port).parse()?)
             .serve(app.into_make_service_with_connect_info::<SocketAddr>())
             .await?;
@@ -234,14 +250,15 @@ where
 
     /// Setting up server router, see example for usage.
     ///
-    pub fn route(&mut self, path: impl Into<String>, router: Router) -> &mut Self {
-        self.routes.push((path.into(), router));
+    pub fn route(mut self, path: impl AsRef<str>, router: Router) -> Self {
+        // self.routes.push((path.into(), router));
+        self.app = self.app.nest(path.as_ref(), router);
         self
     }
 
     /// Server listening port, default is 8080
     ///
-    pub fn port(&mut self, port: u16) -> &mut Self {
+    pub fn port(mut self, port: u16) -> Self {
         self.port = port;
         self
     }
@@ -249,7 +266,7 @@ where
     /// Setting up a runtime static file path.
     ///
     /// Unlike [spa_server_root], file in this path can be changed in runtime.
-    pub fn static_path(&mut self, path: impl Into<String>, dir: impl Into<PathBuf>) -> &mut Self {
+    pub fn static_path(mut self, path: impl Into<String>, dir: impl Into<PathBuf>) -> Self {
         self.static_path = Some((path.into(), dir.into()));
         self
     }

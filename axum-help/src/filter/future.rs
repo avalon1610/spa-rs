@@ -55,7 +55,7 @@ pin_project! {
     #[derive(Debug)]
     enum State<F, G> {
         /// Waiting for the predicate future
-        Check { #[pin]check: F},
+        Check { #[pin] check: F},
         /// Waiting for the response future
         WaitResponse { #[pin] response: G}
     }
