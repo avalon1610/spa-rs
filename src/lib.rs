@@ -16,7 +16,7 @@
 //! #[tokio::main]
 //! async fn main() -> Result<()> {
 //!     let data = String::new();           // server context can be acccess by [axum::Extension]
-//!     let mut srv = SpaServer::new()
+//!     let mut srv = SpaServer::new()?
 //!         .port(3000)
 //!         .data(data)
 //!         .static_path("/png", "web")     // static file generated in runtime
@@ -44,7 +44,7 @@
 //!   let forward_addr = "http://localhost:1234";
 //!   srv.reverse_proxy(forward_addr.parse()?);
 //! ```
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 #[cfg(feature = "reverse-proxy")]
 use axum::response::IntoResponse;
 use axum::{
@@ -61,7 +61,7 @@ use http::{header, Request, StatusCode, Uri};
 use log::{debug, error, warn};
 use std::{
     convert::Infallible,
-    env::temp_dir,
+    env::current_exe,
     fs::{self, create_dir_all},
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -94,6 +94,7 @@ pub struct SpaServer {
     app: Router,
     forward: Option<Uri>,
     release_path: PathBuf,
+    extra_layer: Option<Box<dyn FnOnce(Router) -> Router>>,
 }
 
 #[cfg(feature = "reverse-proxy")]
@@ -135,16 +136,18 @@ async fn forwarded_to_dev() {
 
 impl SpaServer {
     /// Just new(), nothing special
-    pub fn new() -> Self {
-        Self {
+    pub fn new() -> Result<Self> {
+        Ok(Self {
             static_path: None,
-            // data: None,
             port: 8080,
             app: Router::new(),
-            // routes: Vec::new(),
             forward: None,
-            release_path: temp_dir().join(format!("{}_static_files", env!("CARGO_PKG_NAME"))),
-        }
+            release_path: current_exe()?
+                .parent()
+                .ok_or_else(|| anyhow!("no parent in current_exe"))?
+                .join(format!(".{}_static_files", env!("CARGO_PKG_NAME"))),
+            extra_layer: None,
+        })
     }
 
     /// Specific server context data
@@ -159,11 +162,11 @@ impl SpaServer {
     }
 
     /// Specific an axum layer to server
-    /// 
+    ///
     /// This is similar to [axum middleware](https://docs.rs/axum/latest/axum/#middleware)
-    pub fn layer<L, B, NewResBody>(mut self, layer: L) -> Self
+    pub fn layer<L, NewResBody>(mut self, layer: L) -> Self
     where
-        L: Layer<Route>,
+        L: Layer<Route> + 'static,
         L::Service: Service<Request<Body>, Response = Response<NewResBody>, Error = Infallible>
             + Clone
             + Send
@@ -172,7 +175,7 @@ impl SpaServer {
         NewResBody: HttpBody<Data = Bytes> + Send + 'static,
         NewResBody::Error: Into<BoxError>,
     {
-        self.app = self.app.layer(layer);
+        self.extra_layer = Some(Box::new(move |app| app.layer(layer)));
         self
     }
 
@@ -195,19 +198,19 @@ impl SpaServer {
     }
 
     /// Run the spa server forever
-    pub async fn run<Root>(self, root: Root) -> Result<()>
+    pub async fn run<Root>(mut self, root: Root) -> Result<()>
     where
         Root: SpaStatic,
     {
         let embeded_dir = root.release(self.release_path)?;
         let index_file = embeded_dir.clone().join("index.html");
 
-        let mut app = Router::new();
-        app = if let Some(uri) = self.forward {
-            app.fallback(forwarded_to_dev.into_service())
+        self.app = if let Some(uri) = self.forward {
+            self.app
+                .fallback(forwarded_to_dev.into_service())
                 .layer(Extension(uri))
         } else {
-            app.fallback(
+            self.app.fallback(
                 get_service(ServeDir::new(&embeded_dir).fallback(ServeFile::new(&index_file)))
                     .layer(Self::add_cache_control())
                     .handle_error(|e| async move {
@@ -224,7 +227,7 @@ impl SpaServer {
         };
 
         if let Some(sf) = self.static_path {
-            app = app.nest(
+            self.app = self.app.nest(
                 &sf.0,
                 get_service(ServeDir::new(&sf.1))
                     .layer(Self::add_cache_control())
@@ -241,8 +244,12 @@ impl SpaServer {
             )
         }
 
+        if let Some(layer) = self.extra_layer {
+            self.app = layer(self.app)
+        }
+
         Server::bind(&format!("0.0.0.0:{}", self.port).parse()?)
-            .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+            .serve(self.app.into_make_service_with_connect_info::<SocketAddr>())
             .await?;
 
         Ok(())
@@ -251,7 +258,6 @@ impl SpaServer {
     /// Setting up server router, see example for usage.
     ///
     pub fn route(mut self, path: impl AsRef<str>, router: Router) -> Self {
-        // self.routes.push((path.into(), router));
         self.app = self.app.nest(path.as_ref(), router);
         self
     }
