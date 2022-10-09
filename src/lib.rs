@@ -92,26 +92,30 @@ pub struct SpaServer {
     static_path: Option<(String, PathBuf)>,
     port: u16,
     app: Router,
-    forward: Option<Uri>,
+    forward: Option<String>,
     release_path: PathBuf,
     extra_layer: Option<Box<dyn FnOnce(Router) -> Router>>,
 }
 
 #[cfg(feature = "reverse-proxy")]
 async fn forwarded_to_dev(
-    Extension(proxy_uri): Extension<Uri>,
+    Extension(forward_addr): Extension<String>,
     uri: Uri,
     method: Method,
 ) -> HttpResult<impl IntoResponse> {
     use axum::body::Full;
+    use http::uri::Scheme;
 
     if method == Method::GET {
         let client = reqwest::Client::builder().no_proxy().build()?;
-        let url = format!(
-            "{}{}",
-            proxy_uri.to_string().trim_end_matches('/'),
-            uri.to_string()
-        );
+        let mut parts = uri.into_parts();
+        parts.authority = Some(forward_addr.parse()?);
+        if parts.scheme.is_none() {
+            parts.scheme = Some(Scheme::HTTP);
+        }
+        let url = Uri::from_parts(parts)?.to_string();
+
+        println!("forward url: {}", url);
         let response = client.get(url).send().await?;
         let status = response.status();
         let headers = response.headers().clone();
@@ -184,8 +188,8 @@ impl SpaServer {
     /// it's useful when debugging UI
     #[cfg(feature = "reverse-proxy")]
     #[cfg_attr(docsrs, doc(cfg(feature = "reverse-proxy")))]
-    pub fn reverse_proxy(mut self, uri: Uri) -> Self {
-        self.forward = Some(uri);
+    pub fn reverse_proxy(mut self, addr: impl Into<String>) -> Self {
+        self.forward = Some(addr.into());
         self
     }
 
@@ -205,10 +209,10 @@ impl SpaServer {
         let embeded_dir = root.release(self.release_path)?;
         let index_file = embeded_dir.clone().join("index.html");
 
-        self.app = if let Some(uri) = self.forward {
+        self.app = if let Some(addr) = self.forward {
             self.app
                 .fallback(forwarded_to_dev.into_service())
-                .layer(Extension(uri))
+                .layer(Extension(addr))
         } else {
             self.app.fallback(
                 get_service(ServeDir::new(&embeded_dir).fallback(ServeFile::new(&index_file)))
