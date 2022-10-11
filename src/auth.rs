@@ -33,6 +33,11 @@ where
     }
 }
 
+#[derive(Clone)]
+pub struct BasicUser {
+    pub username: String,
+}
+
 impl<ReqBody, T> AsyncPredicate<Request<ReqBody>, UnsyncBoxBody<Bytes, Error>> for AsyncBasicAuth<T>
 where
     T: AuthCheckPredicate + Clone,
@@ -42,13 +47,16 @@ where
     type Response = Response<UnsyncBoxBody<Bytes, Error>>;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Request, Self::Response>> + Send>>;
 
-    fn check(&mut self, request: Request<ReqBody>) -> Self::Future {
+    fn check(&mut self, mut request: Request<ReqBody>) -> Self::Future {
         Box::pin(async move {
             let mut err = "Need basic authenticate".to_string();
             if let Some(authorization) = request.headers().typed_get::<Authorization<Basic>>() {
                 if let Err(e) = T::check(authorization.username(), authorization.password()).await {
                     err = format!("check authorization error: {:?}", e);
                 } else {
+                    request.extensions_mut().insert(BasicUser {
+                        username: authorization.username().to_string(),
+                    });
                     return Ok(request);
                 }
             }
