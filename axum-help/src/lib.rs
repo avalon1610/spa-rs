@@ -67,22 +67,22 @@ where
 #[macro_export]
 macro_rules! http_err {
     ($status: path, $fmt: literal, $($args: tt)+) => {
-        HttpError {
+        spa_rs::HttpError {
             message: format!($fmt, $($args)+),
             status_code: $status
         }
     };
     ($status: path, $msg: literal) => {
-        HttpError {
+        spa_rs::HttpError {
             message: $msg.to_string(),
             status_code: $status
         }
     };
     ($fmt: literal, $($args: tt)+) => {
-        http_err!(StatusCode::INTERNAL_SERVER_ERROR, $fmt, $($args)+)
+        http_err!(spa_rs::http::StatusCode::INTERNAL_SERVER_ERROR, $fmt, $($args)+)
     };
     ($msg: literal) => {
-        http_err!(StatusCode::INTERNAL_SERVER_ERROR, $msg)
+        http_err!(spa_rs::http::StatusCode::INTERNAL_SERVER_ERROR, $msg)
     };
 }
 

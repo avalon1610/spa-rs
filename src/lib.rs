@@ -73,6 +73,7 @@ use tower_http::{
 };
 
 pub use axum::*;
+pub use http_body;
 pub use rust_embed::RustEmbed;
 
 pub mod auth;
@@ -94,7 +95,7 @@ pub struct SpaServer {
     app: Router,
     forward: Option<String>,
     release_path: PathBuf,
-    extra_layer: Option<Box<dyn FnOnce(Router) -> Router>>,
+    extra_layer: Vec<Box<dyn FnOnce(Router) -> Router>>,
 }
 
 #[cfg(feature = "reverse-proxy")]
@@ -150,7 +151,7 @@ impl SpaServer {
                 .parent()
                 .ok_or_else(|| anyhow!("no parent in current_exe"))?
                 .join(format!(".{}_static_files", env!("CARGO_PKG_NAME"))),
-            extra_layer: None,
+            extra_layer: Vec::new(),
         })
     }
 
@@ -179,7 +180,7 @@ impl SpaServer {
         NewResBody: HttpBody<Data = Bytes> + Send + 'static,
         NewResBody::Error: Into<BoxError>,
     {
-        self.extra_layer = Some(Box::new(move |app| app.layer(layer)));
+        self.extra_layer.push(Box::new(move |app| app.layer(layer)));
         self
     }
 
@@ -248,7 +249,7 @@ impl SpaServer {
             )
         }
 
-        if let Some(layer) = self.extra_layer {
+        for layer in self.extra_layer {
             self.app = layer(self.app)
         }
 

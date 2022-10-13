@@ -13,10 +13,12 @@ use std::{future::Future, pin::Pin};
 
 #[async_trait]
 pub trait AuthCheckPredicate {
+    type CheckInfo: Send + Sync + 'static;
+
     async fn check(
         username: impl Into<String> + Send,
         password: impl Into<String> + Send,
-    ) -> Result<()>;
+    ) -> Result<Self::CheckInfo>;
 }
 
 #[derive(Clone)]
@@ -33,11 +35,6 @@ where
     }
 }
 
-#[derive(Clone)]
-pub struct BasicUser {
-    pub username: String,
-}
-
 impl<ReqBody, T> AsyncPredicate<Request<ReqBody>, UnsyncBoxBody<Bytes, Error>> for AsyncBasicAuth<T>
 where
     T: AuthCheckPredicate + Clone,
@@ -51,13 +48,12 @@ where
         Box::pin(async move {
             let mut err = "Need basic authenticate".to_string();
             if let Some(authorization) = request.headers().typed_get::<Authorization<Basic>>() {
-                if let Err(e) = T::check(authorization.username(), authorization.password()).await {
-                    err = format!("check authorization error: {:?}", e);
-                } else {
-                    request.extensions_mut().insert(BasicUser {
-                        username: authorization.username().to_string(),
-                    });
-                    return Ok(request);
+                match T::check(authorization.username(), authorization.password()).await {
+                    Err(e) => err = format!("check authorization error: {:?}", e),
+                    Ok(ci) => {
+                        request.extensions_mut().insert(ci);
+                        return Ok(request);
+                    }
                 }
             }
 
