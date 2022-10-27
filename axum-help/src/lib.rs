@@ -10,7 +10,7 @@ pub mod filter;
 /// It implements [IntoResponse], so can be used in [axum] handler.
 ///
 /// # Example
-/// 
+///
 /// ```
 /// # use axum::response::IntoResponse;
 /// # use axum_help::HttpError;
@@ -110,7 +110,7 @@ macro_rules! http_err {
 #[macro_export]
 macro_rules! http_bail {
     ($($args: tt)+) => {
-        return Err(http_err!($($args)+));
+        return Err(spa_rs::http_err!($($args)+));
     };
 }
 
@@ -127,7 +127,7 @@ macro_rules! http_bail {
 ///     result.http_context(StatusCode::BAD_REQUEST, "bad request")?;   
 /// #   let result = Err(Error::new(ErrorKind::InvalidInput, "bad input"));
 ///     result.http_error("bad request")?;
-/// 
+///
 ///     Ok(())
 /// }
 /// ```
@@ -167,7 +167,7 @@ where
 }
 
 /// convenient return type when writing [axum] handler.
-/// 
+///
 pub type HttpResult<T> = Result<T, HttpError>;
 
 #[cfg(test)]
