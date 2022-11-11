@@ -55,16 +55,16 @@ use axum::{
     response::Response,
     routing::{get_service, Route, Router},
 };
+use axum_server::tls_rustls::RustlsConfig;
 #[cfg(feature = "reverse-proxy")]
 use http::Method;
-use http::{header, Request, StatusCode, Uri};
+use http::{header, Request, StatusCode};
 use log::{debug, error, warn};
 use std::{
     convert::Infallible,
     env::current_exe,
     fs::{self, create_dir_all},
-    net::SocketAddr,
-    path::{Path, PathBuf},
+    path::{Path, PathBuf}, net::SocketAddr,
 };
 use tower::{Layer, Service};
 use tower_http::{
@@ -203,33 +203,64 @@ impl SpaServer {
     }
 
     /// Run the spa server forever
-    pub async fn run<Root>(mut self, root: Root) -> Result<()>
+    pub async fn run<Root>(self, root: Root) -> Result<()>
     where
         Root: SpaStatic,
     {
-        let embeded_dir = root.release(self.release_path)?;
-        let index_file = embeded_dir.clone().join("index.html");
+        self.run_raw(Some(root), None).await
+    }
 
-        self.app = if let Some(addr) = self.forward {
-            self.app
-                .fallback(forwarded_to_dev.into_service())
-                .layer(Extension(addr))
-        } else {
-            self.app.fallback(
-                get_service(ServeDir::new(&embeded_dir).fallback(ServeFile::new(&index_file)))
-                    .layer(Self::add_cache_control())
-                    .handle_error(|e| async move {
-                        (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            format!(
+    /// Run the spa server with tls
+    pub async fn run_tls<Root>(self, root: Root, config: HttpsConfig) -> Result<()>
+    where
+        Root: SpaStatic,
+    {
+        self.run_raw(Some(root), Some(config)).await
+    }
+
+    /// Run the spa server without spa root
+    pub async fn run_api<Root>(self) -> Result<()>
+    where
+        Root: SpaStatic,
+    {
+        self.run_raw::<ApiOnly>(None, None).await
+    }
+
+    /// Run the spa server with tls and without spa root
+    pub async fn run_api_tls(self, config: HttpsConfig) -> Result<()> {
+        self.run_raw::<ApiOnly>(None, Some(config)).await
+    }
+
+    /// Run the spa server with or without spa root, and with or without tls
+    async fn run_raw<Root>(mut self, root: Option<Root>, config: Option<HttpsConfig>) -> Result<()>
+    where
+        Root: SpaStatic,
+    {
+        if let Some(root) = root {
+            let embeded_dir = root.release(self.release_path)?;
+            let index_file = embeded_dir.clone().join("index.html");
+
+            self.app = if let Some(addr) = self.forward {
+                self.app
+                    .fallback(forwarded_to_dev.into_service())
+                    .layer(Extension(addr))
+            } else {
+                self.app.fallback(
+                    get_service(ServeDir::new(&embeded_dir).fallback(ServeFile::new(&index_file)))
+                        .layer(Self::add_cache_control())
+                        .handle_error(|e| async move {
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!(
                                 "Unhandled internal server error {:?} when serve embeded path {}",
                                 e,
                                 embeded_dir.display()
                             ),
-                        )
-                    }),
-            )
-        };
+                            )
+                        }),
+                )
+            };
+        }
 
         if let Some(sf) = self.static_path {
             self.app = self.app.nest(
@@ -253,9 +284,19 @@ impl SpaServer {
             self.app = layer(self.app)
         }
 
-        Server::bind(&format!("0.0.0.0:{}", self.port).parse()?)
+        let addr = format!("0.0.0.0:{}", self.port).parse()?;
+        if let Some(config) = config {
+            axum_server::bind_rustls(
+                addr,
+                RustlsConfig::from_pem(config.certificate, config.private_key).await?,
+            )
             .serve(self.app.into_make_service_with_connect_info::<SocketAddr>())
             .await?;
+        } else {
+            axum_server::bind(addr)
+                .serve(self.app.into_make_service_with_connect_info::<SocketAddr>())
+                .await?;
+        }
 
         Ok(())
     }
@@ -288,6 +329,11 @@ impl SpaServer {
             HeaderValue::from_static("max-age=300"),
         )
     }
+}
+
+pub struct HttpsConfig {
+    pub certificate: Vec<u8>,
+    pub private_key: Vec<u8>,
 }
 
 /// Specific SPA dist file root path in compile time
@@ -336,3 +382,16 @@ pub trait SpaStatic: RustEmbed {
         Ok(target_dir)
     }
 }
+
+impl SpaStatic for ApiOnly {}
+impl RustEmbed for ApiOnly {
+    fn get(_file_path: &str) -> Option<rust_embed::EmbeddedFile> {
+        unreachable!()
+    }
+
+    fn iter() -> rust_embed::Filenames {
+        unreachable!()
+    }
+}
+
+struct ApiOnly;
