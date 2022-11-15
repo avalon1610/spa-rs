@@ -56,15 +56,16 @@ use axum::{
     routing::{get_service, Route, Router},
 };
 use axum_server::tls_rustls::RustlsConfig;
-#[cfg(feature = "reverse-proxy")]
-use http::Method;
 use http::{header, Request, StatusCode};
+#[cfg(feature = "reverse-proxy")]
+use http::{Method, Uri};
 use log::{debug, error, warn};
 use std::{
     convert::Infallible,
     env::current_exe,
     fs::{self, create_dir_all},
-    path::{Path, PathBuf}, net::SocketAddr,
+    net::SocketAddr,
+    path::{Path, PathBuf},
 };
 use tower::{Layer, Service};
 use tower_http::{
