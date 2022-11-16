@@ -337,6 +337,55 @@ pub struct HttpsConfig {
     pub private_key: Vec<u8>,
 }
 
+/// setup https pems   
+/// 
+/// ## Example
+/// ```
+/// https_pems!("/some/folder/contains/two/pem/file");
+/// ```
+/// 
+/// ## Caution
+/// pem file name should be [`cert.pem`] and [`key.pem`]
+/// 
+#[macro_export]
+macro_rules! https_pems {
+    ($path: literal) => {
+        #[derive(spa_rs::RustEmbed)]
+        #[folder = $path]
+        struct HttpsPems;
+    };
+
+    () => {{
+        let https_config = || -> anyhow::Result<spa_rs::HttpsConfig> {
+            let mut cert = Vec::new();
+            let mut key = Vec::new();
+            for file in HttpsPems::iter() {
+                if let Some(f) = HttpsPems::get(&file) {
+                    macro_rules! setup {
+                        ($t: expr) => {
+                            if file == format!("{}.pem", stringify!($t)) {
+                                $t = f.data.to_vec();
+                            }
+                        };
+                    }
+                    setup!(cert);
+                    setup!(key);            
+                }
+            }
+        
+            if cert.is_empty() || key.is_empty() {
+                anyhow::bail!("invalid ssl cert or key embed file");
+            }
+        
+            Ok(spa_rs::HttpsConfig {
+                certificate: cert,
+                private_key: key,
+            })
+        };
+        https_config()
+    }}
+}
+
 /// Specific SPA dist file root path in compile time
 ///
 #[macro_export]
