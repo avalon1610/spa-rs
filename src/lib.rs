@@ -49,8 +49,7 @@ use anyhow::{anyhow, Result};
 use axum::response::IntoResponse;
 use axum::{
     body::Bytes,
-    body::{Body, HttpBody},
-    handler::Handler,
+    body::{Body, HttpBody},    
     http::HeaderValue,
     response::Response,
     routing::{get_service, Route, Router},
@@ -172,7 +171,7 @@ impl SpaServer {
     /// This is similar to [axum middleware](https://docs.rs/axum/latest/axum/#middleware)
     pub fn layer<L, NewResBody>(mut self, layer: L) -> Self
     where
-        L: Layer<Route> + 'static,
+        L: Layer<Route> + Clone + Send + 'static,
         L::Service: Service<Request<Body>, Response = Response<NewResBody>, Error = Infallible>
             + Clone
             + Send
@@ -220,10 +219,7 @@ impl SpaServer {
     }
 
     /// Run the spa server without spa root
-    pub async fn run_api<Root>(self) -> Result<()>
-    where
-        Root: SpaStatic,
-    {
+    pub async fn run_api(self) -> Result<()> {
         self.run_raw::<ApiOnly>(None, None).await
     }
 
@@ -242,14 +238,12 @@ impl SpaServer {
             let index_file = embeded_dir.clone().join("index.html");
 
             self.app = if let Some(addr) = self.forward {
-                self.app
-                    .fallback(forwarded_to_dev.into_service())
-                    .layer(Extension(addr))
+                self.app.fallback(forwarded_to_dev).layer(Extension(addr))
             } else {
-                self.app.fallback(
+                self.app.fallback_service(
                     get_service(ServeDir::new(&embeded_dir).fallback(ServeFile::new(&index_file)))
                         .layer(Self::add_cache_control())
-                        .handle_error(|e| async move {
+                        .handle_error(|e: anyhow::Error| async move {
                             (
                                 StatusCode::INTERNAL_SERVER_ERROR,
                                 format!(
@@ -264,11 +258,11 @@ impl SpaServer {
         }
 
         if let Some(sf) = self.static_path {
-            self.app = self.app.nest(
+            self.app = self.app.route(
                 &sf.0,
                 get_service(ServeDir::new(&sf.1))
                     .layer(Self::add_cache_control())
-                    .handle_error(|e| async move {
+                    .handle_error(|e: anyhow::Error| async move {
                         (
                             StatusCode::INTERNAL_SERVER_ERROR,
                             format!(
@@ -338,15 +332,15 @@ pub struct HttpsConfig {
 }
 
 /// setup https pems   
-/// 
+///
 /// ## Example
 /// ```
 /// https_pems!("/some/folder/contains/two/pem/file");
 /// ```
-/// 
+///
 /// ## Caution
 /// pem file name should be [`cert.pem`] and [`key.pem`]
-/// 
+///
 #[macro_export]
 macro_rules! https_pems {
     ($path: literal) => {
@@ -369,21 +363,21 @@ macro_rules! https_pems {
                         };
                     }
                     setup!(cert);
-                    setup!(key);            
+                    setup!(key);
                 }
             }
-        
+
             if cert.is_empty() || key.is_empty() {
                 anyhow::bail!("invalid ssl cert or key embed file");
             }
-        
+
             Ok(spa_rs::HttpsConfig {
                 certificate: cert,
                 private_key: key,
             })
         };
         https_config()
-    }}
+    }};
 }
 
 /// Specific SPA dist file root path in compile time

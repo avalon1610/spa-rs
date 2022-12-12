@@ -61,7 +61,7 @@ impl<T: Clone, U: Clone, B> Clone for FilterEx<T, U, B> {
     }
 }
 
-impl<T, U, B> FilterEx<T, U, B> {
+impl<T, U: Clone, B> FilterEx<T, U, B> {
     /// Returns a new [FilterEx] service wrapping `inner`
     pub fn new(inner: T, predicate: U) -> Self {
         Self {
