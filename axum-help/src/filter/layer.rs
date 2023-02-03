@@ -46,6 +46,15 @@ pub struct AsyncFilterExLayer<U, B> {
     p: PhantomData<B>,
 }
 
+impl<U: Clone, B> Clone for AsyncFilterExLayer<U, B> {
+    fn clone(&self) -> Self {
+        Self {
+            predicate: self.predicate.clone(),
+            p: self.p.clone(),
+        }
+    }
+}
+
 impl<U, B> AsyncFilterExLayer<U, B> {
     pub fn new(predicate: U) -> Self {
         Self {
