@@ -49,7 +49,7 @@ use anyhow::{anyhow, Result};
 use axum::response::IntoResponse;
 use axum::{
     body::Bytes,
-    body::{Body, HttpBody},    
+    body::{Body, HttpBody},
     http::HeaderValue,
     response::Response,
     routing::{get_service, Route, Router},
@@ -247,10 +247,10 @@ impl SpaServer {
                             (
                                 StatusCode::INTERNAL_SERVER_ERROR,
                                 format!(
-                                "Unhandled internal server error {:?} when serve embeded path {}",
-                                e,
-                                embeded_dir.display()
-                            ),
+                            "Unhandled internal server error {:?} when serve embeded path {}",
+                            e,
+                            embeded_dir.display()
+                        ),
                             )
                         }),
                 )
@@ -258,7 +258,7 @@ impl SpaServer {
         }
 
         if let Some(sf) = self.static_path {
-            self.app = self.app.route(
+            self.app = self.app.nest_service(
                 &sf.0,
                 get_service(ServeDir::new(&sf.1))
                     .layer(Self::add_cache_control())
