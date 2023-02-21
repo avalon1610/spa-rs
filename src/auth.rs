@@ -22,7 +22,7 @@ pub trait AuthCheckPredicate {
 }
 
 #[derive(Clone)]
-pub struct AsyncBasicAuth<T>(T)
+pub struct AsyncBasicAuth<T>(T, String)
 where
     T: AuthCheckPredicate + Clone;
 
@@ -31,7 +31,12 @@ where
     T: AuthCheckPredicate + Clone,
 {
     pub fn new(p: T) -> Self {
-        Self(p)
+        Self(p, "Need basic authenticate".to_string())
+    }
+
+    pub fn err_msg(mut self, msg: impl Into<String>) -> Self {
+        self.1 = msg.into();
+        self
     }
 }
 
@@ -45,8 +50,8 @@ where
     type Future = Pin<Box<dyn Future<Output = Result<Self::Request, Self::Response>> + Send>>;
 
     fn check(&mut self, mut request: Request<ReqBody>) -> Self::Future {
+        let mut err = self.1.clone();
         Box::pin(async move {
-            let mut err = "Need basic authenticate".to_string();
             if let Some(authorization) = request.headers().typed_get::<Authorization<Basic>>() {
                 match T::check(authorization.username(), authorization.password()).await {
                     Err(e) => err = format!("check authorization error: {:?}", e),
