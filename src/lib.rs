@@ -90,7 +90,7 @@ pub use axum_help::*;
 ///
 #[derive(Default)]
 pub struct SpaServer {
-    static_path: Option<(String, PathBuf)>,
+    static_path: Vec<(String, PathBuf)>,
     port: u16,
     app: Router,
     forward: Option<String>,
@@ -143,7 +143,7 @@ impl SpaServer {
     /// Just new(), nothing special
     pub fn new() -> Result<Self> {
         Ok(Self {
-            static_path: None,
+            static_path: Vec::new(),
             port: 8080,
             app: Router::new(),
             forward: None,
@@ -257,7 +257,7 @@ impl SpaServer {
             };
         }
 
-        if let Some(sf) = self.static_path {
+        for sf in self.static_path {
             self.app = self.app.nest_service(
                 &sf.0,
                 get_service(ServeDir::new(&sf.1))
@@ -314,7 +314,7 @@ impl SpaServer {
     ///
     /// Unlike [spa_server_root], file in this path can be changed in runtime.
     pub fn static_path(mut self, path: impl Into<String>, dir: impl Into<PathBuf>) -> Self {
-        self.static_path = Some((path.into(), dir.into()));
+        self.static_path.push((path.into(), dir.into()));
         self
     }
 
