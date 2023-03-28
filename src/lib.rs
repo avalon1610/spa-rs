@@ -1,8 +1,8 @@
-//! spa-rs is a library who can embed all SPA web application files (dist static file), 
+//! spa-rs is a library who can embed all SPA web application files (dist static file),
 //! and release as a single binary executable.
-//! 
+//!
 //! It based-on [axum] and [rust_embed]
-//! 
+//!
 //! It reexported all axum module for convenient use.
 //! # Example
 //! ```no_run
@@ -10,14 +10,14 @@
 //! use spa_rs::SpaServer;
 //! use spa_rs::routing::{get, Router};
 //! use anyhow::Result;
-//! 
+//!
 //! spa_server_root!("web/dist");           // specific your SPA dist file location
-//! 
+//!
 //! #[tokio::main]
 //! async fn main() -> Result<()> {
 //!     let data = String::new();           // server context can be acccess by [axum::Extension]
-//!     let mut srv = SpaServer::new();
-//!     srv.port(3000)
+//!     let mut srv = SpaServer::new()?
+//!         .port(3000)
 //!         .data(data)
 //!         .static_path("/png", "web")     // static file generated in runtime
 //!         .route("/api", Router::new()
@@ -25,86 +25,98 @@
 //!         )
 //!     );
 //!     srv.run(spa_server_root!()).await?;  
-//! 
+//!
 //!     Ok(())
 //! }
 //! ```
-//! 
+//!
 //! # Session
 //! See [session] module for more detail.
 //!
-//! # Dev 
+//! # Dev
 //! When writing SPA application, you may want use hot-reload functionallity provided
-//! by SPA framework. such as [`vite dev`] or [`ng serve`]. 
-//! 
+//! by SPA framework. such as [`vite dev`] or [`ng serve`].
+//!
 //! You can use spa-rs to reverse proxy all static requests to SPA framework. (need enable `reverse-proxy` feature)
-//! 
+//!
 //! ## Example
 //! ```ignore
 //!   let forward_addr = "http://localhost:1234";
 //!   srv.reverse_proxy(forward_addr.parse()?);
 //! ```
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 #[cfg(feature = "reverse-proxy")]
 use axum::response::IntoResponse;
 use axum::{
-    handler::Handler,
+    body::Bytes,
+    body::{Body, HttpBody},
     http::HeaderValue,
-    routing::{get_service, Router},
+    response::Response,
+    routing::{get_service, Route, Router},
 };
+use axum_server::tls_rustls::RustlsConfig;
+use http::{header, Request, StatusCode};
 #[cfg(feature = "reverse-proxy")]
-use http::Method;
-use http::{header, StatusCode, Uri};
+use http::{Method, Uri};
 use log::{debug, error, warn};
 use std::{
-    env::temp_dir,
+    convert::Infallible,
+    env::current_exe,
     fs::{self, create_dir_all},
     net::SocketAddr,
     path::{Path, PathBuf},
 };
+use tower::{Layer, Service};
 use tower_http::{
     services::{ServeDir, ServeFile},
     set_header::SetResponseHeaderLayer,
 };
 
 pub use axum::*;
+pub use http_body;
 pub use rust_embed::RustEmbed;
 
+pub mod auth;
 pub mod session;
 pub use axum_help::*;
 
-/// A server wrapped axum server. 
-/// 
+/// A server wrapped axum server.
+///
 /// It can:
 /// - serve static files in SPA root path
 /// - serve API requests in router
 /// - fallback to SPA static file when route matching failed
 ///     - if still get 404, it will redirect to SPA index.html
-/// 
+///
 #[derive(Default)]
-pub struct SpaServer<T> {
-    static_path: Option<(String, PathBuf)>,
-    data: Option<T>,
+pub struct SpaServer {
+    static_path: Vec<(String, PathBuf)>,
     port: u16,
-    routes: Vec<(String, Router)>,
-    forward: Option<Uri>,
+    app: Router,
+    forward: Option<String>,
+    release_path: PathBuf,
+    extra_layer: Vec<Box<dyn FnOnce(Router) -> Router>>,
 }
 
 #[cfg(feature = "reverse-proxy")]
 async fn forwarded_to_dev(
-    Extension(proxy_uri): Extension<Uri>,
+    Extension(forward_addr): Extension<String>,
     uri: Uri,
     method: Method,
 ) -> HttpResult<impl IntoResponse> {
-    use axum::{body::Full, response::Response};
+    use axum::body::Full;
+    use http::uri::Scheme;
 
     if method == Method::GET {
         let client = reqwest::Client::builder().no_proxy().build()?;
-        let url = format!(
-            "{}{}",
-            proxy_uri.to_string().trim_end_matches('/'),
-            uri.to_string()
-        );
+        let mut parts = uri.into_parts();
+        parts.authority = Some(forward_addr.parse()?);
+        if parts.scheme.is_none() {
+            parts.scheme = Some(Scheme::HTTP);
+        }
+        let url = Uri::from_parts(parts)?.to_string();
+
+        println!("forward url: {}", url);
         let response = client.get(url).send().await?;
         let status = response.status();
         let headers = response.headers().clone();
@@ -127,26 +139,48 @@ async fn forwarded_to_dev() {
     unreachable!("reverse-proxy not enabled, should never call forwarded_to_dev")
 }
 
-impl<T> SpaServer<T>
-where
-    T: Clone + Sync + Send + 'static,
-{
+impl SpaServer {
     /// Just new(), nothing special
-    pub fn new() -> Self {
-        Self {
-            static_path: None,
-            data: None,
+    pub fn new() -> Result<Self> {
+        Ok(Self {
+            static_path: Vec::new(),
             port: 8080,
-            routes: Vec::new(),
+            app: Router::new(),
             forward: None,
-        }
+            release_path: current_exe()?
+                .parent()
+                .ok_or_else(|| anyhow!("no parent in current_exe"))?
+                .join(format!(".{}_static_files", env!("CARGO_PKG_NAME"))),
+            extra_layer: Vec::new(),
+        })
     }
 
     /// Specific server context data
-    /// 
+    ///
     /// This is similar to [axum middleware](https://docs.rs/axum/latest/axum/#middleware)
-    pub fn data(&mut self, data: T) -> &mut Self {
-        self.data = Some(data);
+    pub fn data<T>(mut self, data: T) -> Self
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        self.app = self.app.layer(Extension(data));
+        self
+    }
+
+    /// Specific an axum layer to server
+    ///
+    /// This is similar to [axum middleware](https://docs.rs/axum/latest/axum/#middleware)
+    pub fn layer<L, NewResBody>(mut self, layer: L) -> Self
+    where
+        L: Layer<Route> + Clone + Send + 'static,
+        L::Service: Service<Request<Body>, Response = Response<NewResBody>, Error = Infallible>
+            + Clone
+            + Send
+            + 'static,
+        <L::Service as Service<Request<Body>>>::Future: Send + 'static,
+        NewResBody: HttpBody<Data = Bytes> + Send + 'static,
+        NewResBody::Error: Into<BoxError>,
+    {
+        self.extra_layer.push(Box::new(move |app| app.layer(layer)));
         self
     }
 
@@ -155,8 +189,16 @@ where
     /// it's useful when debugging UI
     #[cfg(feature = "reverse-proxy")]
     #[cfg_attr(docsrs, doc(cfg(feature = "reverse-proxy")))]
-    pub fn reverse_proxy(&mut self, uri: Uri) -> &mut Self {
-        self.forward = Some(uri);
+    pub fn reverse_proxy(mut self, addr: impl Into<String>) -> Self {
+        self.forward = Some(addr.into());
+        self
+    }
+
+    /// static file release path in runtime
+    ///
+    /// Default path is /tmp/[env!(CARGO_PKG_NAME)]_static_files
+    pub fn release_path(mut self, rp: impl Into<PathBuf>) -> Self {
+        self.release_path = rp.into();
         self
     }
 
@@ -165,36 +207,62 @@ where
     where
         Root: SpaStatic,
     {
-        let embeded_dir = root.release()?;
-        let index_file = embeded_dir.clone().join("index.html");
+        self.run_raw(Some(root), None).await
+    }
 
-        let mut app = Router::new();
-        app = if let Some(uri) = self.forward {
-            app.fallback(forwarded_to_dev.into_service())
-                .layer(Extension(uri))
-        } else {
-            app.fallback(
-                get_service(ServeDir::new(&embeded_dir).fallback(ServeFile::new(&index_file)))
-                    .layer(Self::add_cache_control())
-                    .handle_error(|e| async move {
-                        (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            format!(
-                                "Unhandled internal server error {:?} when serve embeded path {}",
-                                e,
-                                embeded_dir.display()
-                            ),
-                        )
-                    }),
-            )
-        };
+    /// Run the spa server with tls
+    pub async fn run_tls<Root>(self, root: Root, config: HttpsConfig) -> Result<()>
+    where
+        Root: SpaStatic,
+    {
+        self.run_raw(Some(root), Some(config)).await
+    }
 
-        if let Some(sf) = self.static_path {
-            app = app.nest(
+    /// Run the spa server without spa root
+    pub async fn run_api(self) -> Result<()> {
+        self.run_raw::<ApiOnly>(None, None).await
+    }
+
+    /// Run the spa server with tls and without spa root
+    pub async fn run_api_tls(self, config: HttpsConfig) -> Result<()> {
+        self.run_raw::<ApiOnly>(None, Some(config)).await
+    }
+
+    /// Run the spa server with or without spa root, and with or without tls
+    async fn run_raw<Root>(mut self, root: Option<Root>, config: Option<HttpsConfig>) -> Result<()>
+    where
+        Root: SpaStatic,
+    {
+        if let Some(root) = root {
+            let embeded_dir = root.release(self.release_path)?;
+            let index_file = embeded_dir.clone().join("index.html");
+
+            self.app = if let Some(addr) = self.forward {
+                self.app.fallback(forwarded_to_dev).layer(Extension(addr))
+            } else {
+                self.app.fallback_service(
+                    get_service(ServeDir::new(&embeded_dir).fallback(ServeFile::new(&index_file)))
+                        .layer(Self::add_cache_control())
+                        .handle_error(|e: anyhow::Error| async move {
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!(
+                            "Unhandled internal server error {:?} when serve embeded path {}",
+                            e,
+                            embeded_dir.display()
+                        ),
+                            )
+                        }),
+                )
+            };
+        }
+
+        for sf in self.static_path {
+            self.app = self.app.nest_service(
                 &sf.0,
                 get_service(ServeDir::new(&sf.1))
                     .layer(Self::add_cache_control())
-                    .handle_error(|e| async move {
+                    .handle_error(|e: anyhow::Error| async move {
                         (
                             StatusCode::INTERNAL_SERVER_ERROR,
                             format!(
@@ -207,40 +275,46 @@ where
             )
         }
 
-        for route in self.routes {
-            app = app.nest(&route.0, route.1);
+        for layer in self.extra_layer {
+            self.app = layer(self.app)
         }
 
-        if let Some(data) = self.data {
-            app = app.layer(Extension(data));
-        }
-
-        Server::bind(&format!("0.0.0.0:{}", self.port).parse()?)
-            .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+        let addr = format!("0.0.0.0:{}", self.port).parse()?;
+        if let Some(config) = config {
+            axum_server::bind_rustls(
+                addr,
+                RustlsConfig::from_pem(config.certificate, config.private_key).await?,
+            )
+            .serve(self.app.into_make_service_with_connect_info::<SocketAddr>())
             .await?;
+        } else {
+            axum_server::bind(addr)
+                .serve(self.app.into_make_service_with_connect_info::<SocketAddr>())
+                .await?;
+        }
 
         Ok(())
     }
 
     /// Setting up server router, see example for usage.
-    /// 
-    pub fn route(&mut self, path: impl Into<String>, router: Router) -> &mut Self {
-        self.routes.push((path.into(), router));
+    ///
+    pub fn route(mut self, path: impl AsRef<str>, router: Router) -> Self {
+        self.app = self.app.nest(path.as_ref(), router);
         self
     }
 
     /// Server listening port, default is 8080
-    /// 
-    pub fn port(&mut self, port: u16) -> &mut Self {
+    ///
+    pub fn port(mut self, port: u16) -> Self {
         self.port = port;
         self
     }
 
-    /// Setting up a runtime static file path. 
-    /// 
+    /// Setting up a runtime static file path.
+    ///
     /// Unlike [spa_server_root], file in this path can be changed in runtime.
-    pub fn static_path(&mut self, path: impl Into<String>, dir: impl Into<PathBuf>) -> &mut Self {
-        self.static_path = Some((path.into(), dir.into()));
+    pub fn static_path(mut self, path: impl Into<String>, dir: impl Into<PathBuf>) -> Self {
+        self.static_path.push((path.into(), dir.into()));
         self
     }
 
@@ -252,8 +326,62 @@ where
     }
 }
 
+pub struct HttpsConfig {
+    pub certificate: Vec<u8>,
+    pub private_key: Vec<u8>,
+}
+
+/// setup https pems   
+///
+/// ## Example
+/// ```
+/// https_pems!("/some/folder/contains/two/pem/file");
+/// ```
+///
+/// ## Caution
+/// pem file name should be [`cert.pem`] and [`key.pem`]
+///
+#[macro_export]
+macro_rules! https_pems {
+    ($path: literal) => {
+        #[derive(spa_rs::RustEmbed)]
+        #[folder = $path]
+        struct HttpsPems;
+    };
+
+    () => {{
+        let https_config = || -> anyhow::Result<spa_rs::HttpsConfig> {
+            let mut cert = Vec::new();
+            let mut key = Vec::new();
+            for file in HttpsPems::iter() {
+                if let Some(f) = HttpsPems::get(&file) {
+                    macro_rules! setup {
+                        ($t: expr) => {
+                            if file == format!("{}.pem", stringify!($t)) {
+                                $t = f.data.to_vec();
+                            }
+                        };
+                    }
+                    setup!(cert);
+                    setup!(key);
+                }
+            }
+
+            if cert.is_empty() || key.is_empty() {
+                anyhow::bail!("invalid ssl cert or key embed file");
+            }
+
+            Ok(spa_rs::HttpsConfig {
+                certificate: cert,
+                private_key: key,
+            })
+        };
+        https_config()
+    }};
+}
+
 /// Specific SPA dist file root path in compile time
-/// 
+///
 #[macro_export]
 macro_rules! spa_server_root {
     ($root: literal) => {
@@ -269,10 +397,10 @@ macro_rules! spa_server_root {
 }
 
 /// Used to release static file into temp dir in runtime.
-/// 
+///
 pub trait SpaStatic: RustEmbed {
-    fn release(&self) -> Result<PathBuf> {
-        let target_dir = temp_dir().join(format!("{}_static_files", env!("CARGO_PKG_NAME")));
+    fn release(&self, release_path: PathBuf) -> Result<PathBuf> {
+        let target_dir = release_path;
         if !target_dir.exists() {
             create_dir_all(&target_dir)?;
         }
@@ -298,3 +426,16 @@ pub trait SpaStatic: RustEmbed {
         Ok(target_dir)
     }
 }
+
+impl SpaStatic for ApiOnly {}
+impl RustEmbed for ApiOnly {
+    fn get(_file_path: &str) -> Option<rust_embed::EmbeddedFile> {
+        unreachable!()
+    }
+
+    fn iter() -> rust_embed::Filenames {
+        unreachable!()
+    }
+}
+
+struct ApiOnly;

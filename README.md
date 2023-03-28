@@ -1,11 +1,9 @@
 # spa-rs
 
-[documentation](https://docs.rs/spa-rs)
-
 spa-rs is a library who can embed all SPA web application files (dist static file),
 and release as a single binary executable.
 
-It based-on [axum](https://docs.rs/axum/latest/axum/) and [rust_embed](https://docs.rs/rust-embed/latest/rust_embed/)
+It based-on [axum] and [rust_embed]
 
 It reexported all axum module for convenient use.
 ## Example
@@ -20,8 +18,8 @@ spa_server_root!("web/dist");           // specific your SPA dist file location
 #[tokio::main]
 async fn main() -> Result<()> {
     let data = String::new();           // server context can be acccess by [axum::Extension]
-    let mut srv = SpaServer::new();
-    srv.port(3000)
+    let mut srv = SpaServer::new()?
+        .port(3000)
         .data(data)
         .static_path("/png", "web")     // static file generated in runtime
         .route("/api", Router::new()
@@ -48,3 +46,5 @@ You can use spa-rs to reverse proxy all static requests to SPA framework. (need 
   let forward_addr = "http://localhost:1234";
   srv.reverse_proxy(forward_addr.parse()?);
 ```
+
+License: MIT
