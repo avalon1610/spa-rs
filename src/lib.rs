@@ -79,6 +79,7 @@ pub use rust_embed::RustEmbed;
 pub mod auth;
 pub mod session;
 pub use axum_help::*;
+pub use axum::debug_handler;
 
 /// A server wrapped axum server.
 ///
