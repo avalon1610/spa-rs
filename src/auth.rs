@@ -96,6 +96,7 @@ where
 {
     inner: T,
     err: String,
+    srv_name: String,
     nonces: Arc<Mutex<VecDeque<(String, String)>>>,
 }
 
@@ -106,9 +107,15 @@ where
     pub fn new(p: T) -> Self {
         Self {
             inner: p,
+            srv_name: env!("CARGO_PKG_NAME").to_owned(),
             err: "Need digest authenticate".to_string(),
             nonces: Arc::new(Mutex::new(VecDeque::new())),
         }
+    }
+
+    pub fn srv_name(mut self, name: impl Into<String>) -> Self {
+        self.srv_name = name.into();
+        self
     }
 
     pub fn err_msg(mut self, msg: impl Into<String>) -> Self {
@@ -130,6 +137,7 @@ where
     fn check(&mut self, request: Request<ReqBody>) -> Self::Future {
         let err = self.err.clone();
         let inner = self.inner.clone();
+        let srv_name = self.srv_name.clone();
         let nonces = self.nonces.clone();
         Box::pin(async move {
             if let Some(auth_header) = request.headers().get("Authorization") {
@@ -138,10 +146,16 @@ where
                 )
                 .map_err(|e| bad_request(e))?;
 
-                return auth.check(inner.username(), inner.password(), nonces, request);
+                return auth.check(
+                    inner.username(),
+                    inner.password(),
+                    nonces,
+                    request,
+                    srv_name,
+                );
             }
 
-            Err(unauthorized(nonces, err))
+            Err(unauthorized(nonces, err, srv_name))
         })
     }
 }
@@ -182,6 +196,7 @@ mod digest {
             password: impl AsRef<str>,
             nonces: Arc<Mutex<VecDeque<(String, String)>>>,
             request: Request<B1>,
+            srv_name: impl AsRef<str>,
         ) -> Result<Request<B1>, Response>
         where
             B1: Debug,
@@ -203,7 +218,7 @@ mod digest {
             }
 
             if !found_nonce {
-                return Err(unauthorized(nonces, "invalid nonce or opaque"));
+                return Err(unauthorized(nonces, "invalid nonce or opaque", srv_name));
             }
 
             log::debug!("digest request: {:?}", request);
@@ -220,7 +235,11 @@ mod digest {
             ));
 
             if format!("{:x}", password) != self.response {
-                return Err(unauthorized(nonces, "invalid username or password"));
+                return Err(unauthorized(
+                    nonces,
+                    "invalid username or password",
+                    srv_name,
+                ));
             }
 
             Ok(request)
@@ -267,8 +286,9 @@ mod digest {
     pub(super) fn unauthorized(
         nonces: Arc<Mutex<VecDeque<(String, String)>>>,
         msg: impl Into<String>,
+        srv_name: impl AsRef<str>,
     ) -> Response {
-        let realm = format!("Login to {}", env!("CARGO_PKG_NAME"));
+        let realm = format!("Login to {}", srv_name.as_ref());
         let nonce = rand_string(32);
         let opaque = rand_string(32);
 
