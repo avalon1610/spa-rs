@@ -44,7 +44,7 @@
 //!   let forward_addr = "http://localhost:1234";
 //!   srv.reverse_proxy(forward_addr.parse()?);
 //! ```
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 #[cfg(feature = "reverse-proxy")]
 use axum::response::IntoResponse;
 use axum::{
@@ -54,6 +54,9 @@ use axum::{
     response::Response,
     routing::{get_service, Route, Router},
 };
+#[cfg(feature = "openssl")]
+use axum_server::tls_openssl::OpenSSLConfig;
+#[cfg(feature = "rustls")]
 use axum_server::tls_rustls::RustlsConfig;
 use http::{header, Request, StatusCode};
 #[cfg(feature = "reverse-proxy")]
@@ -78,8 +81,8 @@ pub use rust_embed::RustEmbed;
 
 pub mod auth;
 pub mod session;
-pub use axum_help::*;
 pub use axum::debug_handler;
+pub use axum_help::*;
 
 /// A server wrapped axum server.
 ///
@@ -212,6 +215,7 @@ impl SpaServer {
     }
 
     /// Run the spa server with tls
+    #[cfg(any(feature = "openssl", feature = "rustls"))]
     pub async fn run_tls<Root>(self, root: Root, config: HttpsConfig) -> Result<()>
     where
         Root: SpaStatic,
@@ -225,6 +229,7 @@ impl SpaServer {
     }
 
     /// Run the spa server with tls and without spa root
+    #[cfg(any(feature = "openssl", feature = "rustls"))]
     pub async fn run_api_tls(self, config: HttpsConfig) -> Result<()> {
         self.run_raw::<ApiOnly>(None, Some(config)).await
     }
@@ -281,17 +286,38 @@ impl SpaServer {
         }
 
         let addr = format!("0.0.0.0:{}", self.port).parse()?;
-        if let Some(config) = config {
-            axum_server::bind_rustls(
-                addr,
-                RustlsConfig::from_pem(config.certificate, config.private_key).await?,
-            )
+        if let Some(_config) = config {
+            #[cfg(any(feature = "openssl", feature = "rustls"))]
+            {
+                #[cfg(feature = "rustls")]
+                {
+                    axum_server::bind_rustls(
+                        addr,
+                        RustlsConfig::from_pem(_config.certificate, _config.private_key).await?,
+                    )
+                }
+                #[cfg(feature = "openssl")]
+                {
+                    let temp_dir = std::env::temp_dir().join(env!("CARGO_PKG_NAME"));
+                    std::fs::create_dir_all(&temp_dir)?;
+                    let cert_file = temp_dir.join("cert.pem");
+                    let key_file = temp_dir.join("key.pem");
+                    std::fs::write(&cert_file, &_config.certificate)?;
+                    std::fs::write(&key_file, &_config.private_key)?;
+                    axum_server::bind_openssl(
+                        addr,
+                        OpenSSLConfig::from_pem_file(cert_file, key_file)
+                            .context("openssl load pem file error")?,
+                    )
+                }
+            }
             .serve(self.app.into_make_service_with_connect_info::<SocketAddr>())
             .await?;
         } else {
             axum_server::bind(addr)
                 .serve(self.app.into_make_service_with_connect_info::<SocketAddr>())
-                .await?;
+                .await
+                .context("serve server error")?;
         }
 
         Ok(())
