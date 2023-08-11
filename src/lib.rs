@@ -287,6 +287,9 @@ impl SpaServer {
 
         let addr = format!("0.0.0.0:{}", self.port).parse()?;
         if let Some(_config) = config {
+            #[cfg(all(feature = "openssl", feature = "rustls"))]
+            compile_error!("Feature openssl and Feature rustls can not be enabled together");
+
             #[cfg(any(feature = "openssl", feature = "rustls"))]
             {
                 #[cfg(feature = "rustls")]

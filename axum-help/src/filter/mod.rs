@@ -27,12 +27,14 @@
 //! # }
 //!```
 //!
+use axum::body::HttpBody;
 use future::{AsyncResponseFuture, ResponseFuture};
 use http::{Request, Response};
 pub use layer::{AsyncFilterExLayer, FilterExLayer};
 pub use predicate::{AsyncPredicate, Predicate};
 use std::{
     marker::PhantomData,
+    pin::Pin,
     task::{Context, Poll},
 };
 use tower::Service;
@@ -216,4 +218,8 @@ where
 
         AsyncResponseFuture::new(check, inner)
     }
+}
+
+pub async fn drain_body<B: HttpBody + Unpin>(mut request: Pin<&mut Request<B>>) {
+    while let Some(_) = request.body_mut().data().await {}
 }

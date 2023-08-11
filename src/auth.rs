@@ -2,11 +2,12 @@ use anyhow::Result;
 use async_trait::async_trait;
 use axum::{
     body::Bytes,
+    body::HttpBody,
     headers::{authorization::Basic, Authorization, HeaderMapExt},
     response::{IntoResponse, Response},
     Error,
 };
-use axum_help::filter::AsyncPredicate;
+use axum_help::filter::{drain_body, AsyncPredicate};
 use http::{Request, StatusCode};
 use http_body::combinators::UnsyncBoxBody;
 use parking_lot::Mutex;
@@ -14,7 +15,7 @@ use std::{
     collections::VecDeque,
     fmt::{Debug, Display},
     future::Future,
-    pin::Pin,
+    pin::{pin, Pin},
     sync::Arc,
 };
 
@@ -56,7 +57,7 @@ where
 impl<ReqBody, T> AsyncPredicate<Request<ReqBody>, UnsyncBoxBody<Bytes, Error>> for AsyncBasicAuth<T>
 where
     T: AuthCheckPredicate + Clone + Send + Sync + 'static,
-    ReqBody: Send + Sync + 'static,
+    ReqBody: HttpBody + Send + Sync + Unpin + 'static,
 {
     type Request = Request<ReqBody>;
     type Response = Response<UnsyncBoxBody<Bytes, Error>>;
@@ -79,6 +80,7 @@ where
                 }
             }
 
+            drain_body(pin!(request)).await;
             Err((
                 StatusCode::UNAUTHORIZED,
                 [("WWW-Authenticate", "Basic"); 1],
@@ -128,7 +130,7 @@ impl<ReqBody, T> AsyncPredicate<Request<ReqBody>, UnsyncBoxBody<Bytes, Error>>
     for AsyncDigestAuth<T>
 where
     T: AuthCheckPredicate + Clone + Send + Sync + 'static,
-    ReqBody: Send + Sync + 'static + Debug,
+    ReqBody: Send + Sync + 'static + Debug + HttpBody + Unpin,
 {
     type Request = Request<ReqBody>;
     type Response = Response<UnsyncBoxBody<Bytes, Error>>;
@@ -155,6 +157,7 @@ where
                 );
             }
 
+            drain_body(pin!(request)).await;
             Err(unauthorized(nonces, err, srv_name))
         })
     }
