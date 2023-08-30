@@ -52,13 +52,16 @@ use axum::{
     body::{Body, HttpBody},
     http::HeaderValue,
     response::Response,
-    routing::{get_service, Route, Router},
+    routing::{get_service, Route},
 };
 #[cfg(feature = "openssl")]
 use axum_server::tls_openssl::OpenSSLConfig;
 #[cfg(feature = "rustls")]
 use axum_server::tls_rustls::RustlsConfig;
-use http::{header, Request, StatusCode};
+use http::{
+    header::{self},
+    Request, StatusCode,
+};
 #[cfg(feature = "reverse-proxy")]
 use http::{Method, Uri};
 use log::{debug, error, warn};
@@ -75,9 +78,12 @@ use tower_http::{
     set_header::SetResponseHeaderLayer,
 };
 
+pub mod rust_embed {
+    pub use rust_embed::*;
+}
+
 pub use axum::*;
 pub use http_body;
-pub use rust_embed::RustEmbed;
 
 pub mod auth;
 pub mod session;
@@ -374,7 +380,7 @@ pub struct HttpsConfig {
 #[macro_export]
 macro_rules! https_pems {
     ($path: literal) => {
-        #[derive(spa_rs::RustEmbed)]
+        #[derive(spa_rs::rust_embed::RustEmbed)]
         #[folder = $path]
         struct HttpsPems;
     };
@@ -415,7 +421,7 @@ macro_rules! https_pems {
 #[macro_export]
 macro_rules! spa_server_root {
     ($root: literal) => {
-        #[derive(spa_rs::RustEmbed)]
+        #[derive(spa_rs::rust_embed::RustEmbed)]
         #[folder = $root]
         struct StaticFiles;
 
@@ -428,7 +434,7 @@ macro_rules! spa_server_root {
 
 /// Used to release static file into temp dir in runtime.
 ///
-pub trait SpaStatic: RustEmbed {
+pub trait SpaStatic: rust_embed::RustEmbed {
     fn release(&self, release_path: PathBuf) -> Result<PathBuf> {
         let target_dir = release_path;
         if !target_dir.exists() {
@@ -458,7 +464,7 @@ pub trait SpaStatic: RustEmbed {
 }
 
 impl SpaStatic for ApiOnly {}
-impl RustEmbed for ApiOnly {
+impl rust_embed::RustEmbed for ApiOnly {
     fn get(_file_path: &str) -> Option<rust_embed::EmbeddedFile> {
         unreachable!()
     }
