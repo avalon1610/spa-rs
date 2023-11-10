@@ -421,7 +421,9 @@ macro_rules! https_pems {
 #[macro_export]
 macro_rules! spa_server_root {
     ($root: literal) => {
-        #[derive(spa_rs::rust_embed::RustEmbed)]
+        use spa_rs::rust_embed;
+
+        #[derive(rust_embed::RustEmbed)]
         #[folder = $root]
         struct StaticFiles;
 
