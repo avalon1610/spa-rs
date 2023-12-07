@@ -8,23 +8,22 @@ version = "0.6.4"
 [dependencies]
 anyhow = "1.0.57"
 async-trait = "0.1.57"
-axum = {version = "0.6", features = ["headers", "multipart", "ws", "macros", "http2"]}
-axum-help = {path = './axum-help'}
-axum-server = {version = "0.5"}
-http = "0.2.7"
-http-body = "0.4.5"
+axum = { version = "0.7", features = ["multipart", "ws", "macros", "http2"] }
+axum-help = { path = './axum-help' }
+axum-server = { git = "https://kkgithub.com/programatik29/axum-server.git" }
+headers = "0.4.0"
 log = "0.4.17"
 md5 = "0.7.0"
 parking_lot = "0.12.0"
 rand = "0.8.5"
-reqwest = {version = "0.11.10", default-features = false, optional = true}
+reqwest = { version = "0.11.10", default-features = false, optional = true }
 rust-embed = "8.0.0"
-tower = {version = "0.4.12"}
-tower-http = {version = "0.4.3", features = ["fs", "set-header"]}
+tower = { version = "0.4.12" }
+tower-http = { version = "0.5.0", features = ["fs", "set-header"] }
 
 [dev-dependencies]
 env_logger = "0.10.0"
-tokio = {version = "1", features = ["rt", "rt-multi-thread", "macros"]}
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 
 [features]
 default = []

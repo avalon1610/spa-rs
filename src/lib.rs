@@ -45,8 +45,6 @@
 //!   srv.reverse_proxy(forward_addr.parse()?);
 //! ```
 use anyhow::{anyhow, Context, Result};
-#[cfg(feature = "reverse-proxy")]
-use axum::response::IntoResponse;
 use axum::{
     body::Bytes,
     body::{Body, HttpBody},
@@ -83,8 +81,6 @@ pub mod rust_embed {
 }
 
 pub use axum::*;
-pub use http_body;
-
 pub mod auth;
 pub mod session;
 pub use axum::debug_handler;
@@ -113,35 +109,36 @@ async fn forwarded_to_dev(
     Extension(forward_addr): Extension<String>,
     uri: Uri,
     method: Method,
-) -> HttpResult<impl IntoResponse> {
-    use axum::body::Full;
-    use http::uri::Scheme;
+) -> HttpResult<Response> {
+    compile_error!("Can not use now, wait for reqwest upgrade hyper to 1.0");
+    // use http::uri::Scheme;
 
-    if method == Method::GET {
-        let client = reqwest::Client::builder().no_proxy().build()?;
-        let mut parts = uri.into_parts();
-        parts.authority = Some(forward_addr.parse()?);
-        if parts.scheme.is_none() {
-            parts.scheme = Some(Scheme::HTTP);
-        }
-        let url = Uri::from_parts(parts)?.to_string();
+    // if method == Method::GET {
+    //     let client = reqwest::Client::builder().no_proxy().build()?;
+    //     let mut parts = uri.into_parts();
+    //     parts.authority = Some(forward_addr.parse()?);
+    //     if parts.scheme.is_none() {
+    //         parts.scheme = Some(Scheme::HTTP);
+    //     }
+    //     let url = Uri::from_parts(parts)?.to_string();
 
-        println!("forward url: {}", url);
-        let response = client.get(url).send().await?;
-        let status = response.status();
-        let headers = response.headers().clone();
-        let bytes = response.bytes().await?;
+    //     println!("forward url: {}", url);
+    //     let response = client.get(url).send().await?;
+    //     let status = response.status();
+    //     let headers = response.headers().clone();
+    //     let bytes = response.bytes().await?;
 
-        let mut response = Response::builder().status(status);
-        *(response.headers_mut().unwrap()) = headers;
-        let response = response.body(Full::from(bytes))?;
-        return Ok(response);
-    }
+    //     let mut response = Response::builder().status(status);
+    //     *(response.headers_mut().unwrap()) = headers;
+    //     let response = response.body(bytes)?;
+    //     return Ok(response);
+    // }
 
-    Err(HttpError {
-        message: "Method not allowed".to_string(),
-        status_code: StatusCode::METHOD_NOT_ALLOWED,
-    })
+    // Err(HttpError {
+    //     message: "Method not allowed".to_string(),
+    //     status_code: StatusCode::METHOD_NOT_ALLOWED,
+    // })
+    todo!()
 }
 
 #[cfg(not(feature = "reverse-proxy"))]

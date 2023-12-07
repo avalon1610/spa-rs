@@ -27,16 +27,12 @@
 //! # }
 //!```
 //!
-use axum::body::HttpBody;
+use axum::{extract::Request, response::Response};
 use future::{AsyncResponseFuture, ResponseFuture};
-use http::{Request, Response};
+use futures_util::StreamExt;
 pub use layer::{AsyncFilterExLayer, FilterExLayer};
 pub use predicate::{AsyncPredicate, Predicate};
-use std::{
-    marker::PhantomData,
-    pin::Pin,
-    task::{Context, Poll},
-};
+use std::task::{Context, Poll};
 use tower::Service;
 
 mod future;
@@ -47,43 +43,37 @@ mod predicate;
 ///
 /// [predicate]: Predicate
 #[derive(Debug)]
-pub struct FilterEx<T, U, B> {
+pub struct FilterEx<T, U> {
     inner: T,
     predicate: U,
-    p: PhantomData<B>,
 }
 
-impl<T: Clone, U: Clone, B> Clone for FilterEx<T, U, B> {
+impl<T: Clone, U: Clone> Clone for FilterEx<T, U> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
             predicate: self.predicate.clone(),
-            p: PhantomData,
         }
     }
 }
 
-impl<T, U: Clone, B> FilterEx<T, U, B> {
+impl<T, U: Clone> FilterEx<T, U> {
     /// Returns a new [FilterEx] service wrapping `inner`
     pub fn new(inner: T, predicate: U) -> Self {
-        Self {
-            inner,
-            predicate,
-            p: PhantomData,
-        }
+        Self { inner, predicate }
     }
 
     /// Returns a new [Layer](tower::Layer) that wraps services with a [FilterEx] service
     /// with the given [Predicate]
     ///
-    pub fn layer(predicate: U) -> FilterExLayer<U, B> {
+    pub fn layer(predicate: U) -> FilterExLayer<U> {
         FilterExLayer::new(predicate)
     }
 
     /// Check a `Request` value against thie filter's predicate
     pub fn check<R>(&mut self, request: R) -> Result<U::Request, U::Response>
     where
-        U: Predicate<R, B>,
+        U: Predicate<R>,
     {
         self.predicate.check(request)
     }
@@ -104,20 +94,20 @@ impl<T, U: Clone, B> FilterEx<T, U, B> {
     }
 }
 
-impl<T, U, ReqBody, ResBody> Service<Request<ReqBody>> for FilterEx<T, U, ResBody>
+impl<T, U> Service<Request> for FilterEx<T, U>
 where
-    T: Service<U::Request, Response = Response<ResBody>>,
-    U: Predicate<Request<ReqBody>, ResBody, Response = Response<ResBody>>,
+    T: Service<U::Request, Response = Response>,
+    U: Predicate<Request, Response = Response>,
 {
     type Response = T::Response;
     type Error = T::Error;
-    type Future = ResponseFuture<T::Future, ResBody>;
+    type Future = ResponseFuture<T::Future>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
+    fn call(&mut self, req: Request) -> Self::Future {
         match self.predicate.check(req) {
             Ok(req) => ResponseFuture::Future {
                 future: self.inner.call(req),
@@ -133,43 +123,37 @@ where
 /// asynchronous [predicate](AsyncPredicate)
 ///
 #[derive(Debug)]
-pub struct AsyncFilterEx<T, U, B> {
+pub struct AsyncFilterEx<T, U> {
     inner: T,
     predicate: U,
-    p: PhantomData<B>,
 }
 
-impl<T: Clone, U: Clone, B> Clone for AsyncFilterEx<T, U, B> {
+impl<T: Clone, U: Clone> Clone for AsyncFilterEx<T, U> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
             predicate: self.predicate.clone(),
-            p: PhantomData,
         }
     }
 }
 
-impl<T, U, B> AsyncFilterEx<T, U, B> {
+impl<T, U> AsyncFilterEx<T, U> {
     /// Returns a new [AsyncFilterEx] service wrapping `inner`.
     pub fn new(inner: T, predicate: U) -> Self {
-        Self {
-            inner,
-            predicate,
-            p: PhantomData,
-        }
+        Self { inner, predicate }
     }
 
     /// Returns a new [Layer](tower::Layer) that wraps services with a [AsyncFilterEx] service
     /// with the given [AsyncPredicate]
     ///
-    pub fn layer(predicate: U) -> AsyncFilterExLayer<U, B> {
+    pub fn layer(predicate: U) -> AsyncFilterExLayer<U> {
         AsyncFilterExLayer::new(predicate)
     }
 
     /// Check a `Request` value against thie filter's predicate
     pub async fn check<R>(&mut self, request: R) -> Result<U::Request, U::Response>
     where
-        U: AsyncPredicate<R, B>,
+        U: AsyncPredicate<R>,
     {
         self.predicate.check(request).await
     }
@@ -190,20 +174,20 @@ impl<T, U, B> AsyncFilterEx<T, U, B> {
     }
 }
 
-impl<T, U, ReqBody, ResBody> Service<Request<ReqBody>> for AsyncFilterEx<T, U, ResBody>
+impl<T, U> Service<Request> for AsyncFilterEx<T, U>
 where
-    T: Service<U::Request, Response = Response<ResBody>> + Clone,
-    U: AsyncPredicate<Request<ReqBody>, ResBody, Response = Response<ResBody>>,
+    T: Service<U::Request, Response = Response> + Clone,
+    U: AsyncPredicate<Request, Response = Response>,
 {
     type Response = T::Response;
     type Error = T::Error;
-    type Future = AsyncResponseFuture<U, T, Request<ReqBody>, ResBody>;
+    type Future = AsyncResponseFuture<U, T, Request>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
+    fn call(&mut self, req: Request) -> Self::Future {
         use std::mem;
 
         let inner = self.inner.clone();
@@ -220,6 +204,7 @@ where
     }
 }
 
-pub async fn drain_body<B: HttpBody + Unpin>(mut request: Pin<&mut Request<B>>) {
-    while let Some(_) = request.body_mut().data().await {}
+pub async fn drain_body(request: Request) {
+    let mut data_stream = request.into_body().into_data_stream();
+    while let Some(_) = data_stream.next().await {}
 }

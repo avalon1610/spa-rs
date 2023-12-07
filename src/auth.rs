@@ -1,29 +1,20 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use axum::{
-    body::Bytes,
-    body::HttpBody,
-    headers::{authorization::Basic, Authorization, HeaderMapExt},
+    extract::Request,
+    http::StatusCode,
     response::{IntoResponse, Response},
-    Error,
 };
 use axum_help::filter::{drain_body, AsyncPredicate};
-use http::{Request, StatusCode};
-use http_body::combinators::UnsyncBoxBody;
+use headers::{authorization::Basic, Authorization, HeaderMapExt};
 use parking_lot::Mutex;
-use std::{
-    collections::VecDeque,
-    fmt::{Debug, Display},
-    future::Future,
-    pin::{pin, Pin},
-    sync::Arc,
-};
+use std::{collections::VecDeque, fmt::Display, future::Future, pin::Pin, sync::Arc};
 
 use self::digest::unauthorized;
 
 #[async_trait]
 pub trait AuthCheckPredicate {
-    type CheckInfo: Send + Sync + 'static;
+    type CheckInfo: Clone + Send + Sync + 'static;
 
     async fn check(
         &self,
@@ -54,16 +45,15 @@ where
     }
 }
 
-impl<ReqBody, T> AsyncPredicate<Request<ReqBody>, UnsyncBoxBody<Bytes, Error>> for AsyncBasicAuth<T>
+impl<T> AsyncPredicate<Request> for AsyncBasicAuth<T>
 where
     T: AuthCheckPredicate + Clone + Send + Sync + 'static,
-    ReqBody: HttpBody + Send + Sync + Unpin + 'static,
 {
-    type Request = Request<ReqBody>;
-    type Response = Response<UnsyncBoxBody<Bytes, Error>>;
+    type Request = Request;
+    type Response = Response;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Request, Self::Response>> + Send>>;
 
-    fn check(&mut self, mut request: Request<ReqBody>) -> Self::Future {
+    fn check(&mut self, mut request: Request) -> Self::Future {
         let mut err = self.1.clone();
         let auth = self.0.clone();
         Box::pin(async move {
@@ -80,7 +70,7 @@ where
                 }
             }
 
-            drain_body(pin!(request)).await;
+            drain_body(request).await;
             Err((
                 StatusCode::UNAUTHORIZED,
                 [("WWW-Authenticate", "Basic"); 1],
@@ -126,17 +116,15 @@ where
     }
 }
 
-impl<ReqBody, T> AsyncPredicate<Request<ReqBody>, UnsyncBoxBody<Bytes, Error>>
-    for AsyncDigestAuth<T>
+impl<T> AsyncPredicate<Request> for AsyncDigestAuth<T>
 where
     T: AuthCheckPredicate + Clone + Send + Sync + 'static,
-    ReqBody: Send + Sync + 'static + Debug + HttpBody + Unpin,
 {
-    type Request = Request<ReqBody>;
-    type Response = Response<UnsyncBoxBody<Bytes, Error>>;
+    type Request = Request;
+    type Response = Response;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Request, Self::Response>> + Send>>;
 
-    fn check(&mut self, request: Request<ReqBody>) -> Self::Future {
+    fn check(&mut self, request: Request) -> Self::Future {
         let err = self.err.clone();
         let inner = self.inner.clone();
         let srv_name = self.srv_name.clone();
@@ -157,7 +145,7 @@ where
                 );
             }
 
-            drain_body(pin!(request)).await;
+            drain_body(request).await;
             Err(unauthorized(nonces, err, srv_name))
         })
     }
@@ -173,8 +161,11 @@ fn bad_request(e: impl Display) -> Response {
 
 mod digest {
     use anyhow::{anyhow, bail, Result};
-    use axum::response::{IntoResponse, Response};
-    use http::{Request, StatusCode};
+    use axum::{
+        extract::Request,
+        http::StatusCode,
+        response::{IntoResponse, Response},
+    };
     use parking_lot::Mutex;
     use rand::{distributions::Alphanumeric, thread_rng, Rng};
     use std::{collections::VecDeque, fmt::Debug, sync::Arc};
@@ -193,17 +184,14 @@ mod digest {
     }
 
     impl Authorization {
-        pub(super) fn check<B1>(
+        pub(super) fn check(
             &self,
             username: impl AsRef<str>,
             password: impl AsRef<str>,
             nonces: Arc<Mutex<VecDeque<(String, String)>>>,
-            request: Request<B1>,
+            request: Request,
             srv_name: impl AsRef<str>,
-        ) -> Result<Request<B1>, Response>
-        where
-            B1: Debug,
-        {
+        ) -> Result<Request, Response> {
             let mut found_nonce = false;
             {
                 let mut nonce_list = nonces.lock();
@@ -248,7 +236,7 @@ mod digest {
             Ok(request)
         }
 
-        const DIGEST_MARK: &str = "Digest";
+        const DIGEST_MARK: &'static str = "Digest";
         pub(super) fn from_header(auth: impl AsRef<str>) -> Result<Self> {
             let auth = auth.as_ref();
             let (mark, content) = auth.split_at(Self::DIGEST_MARK.len());

@@ -1,8 +1,8 @@
 use std::future::Future;
 
 /// Checks a request synchronously
-/// 
-/// 
+///
+///
 /// # Example
 /// ```
 /// # use axum_help::filter::Predicate;
@@ -10,21 +10,21 @@ use std::future::Future;
 /// # use http::Request;
 /// #
 /// struct CheckService;
-/// 
+///
 /// impl<ResBody, ReqBody> Predicate<Request<ReqBody>, ResBody> for CheckService
 /// where
 ///     ResBody: Default,
 /// {
 ///     type Request = Request<ReqBody>;
 ///     type Response = Response<ResBody>;
-/// 
+///
 ///     fn check(&mut self, mut request: Request<ReqBody>) -> Result<Self::Request, Self::Response> {
 ///         // do something check
 ///         Ok(request)   
 ///     }
 /// }
 /// ```
-pub trait Predicate<Request, B> {
+pub trait Predicate<Request> {
     /// The type of requests returned by [`check`](Predicate::check).
     ///
     /// This request is forwarded to the inner service if the predicate
@@ -40,7 +40,7 @@ pub trait Predicate<Request, B> {
     fn check(&mut self, request: Request) -> Result<Self::Request, Self::Response>;
 }
 
-impl<T, Req, Res, B, F> Predicate<T, B> for F
+impl<T, Req, Res, F> Predicate<T> for F
 where
     F: FnMut(T) -> Result<Req, Res>,
 {
@@ -63,7 +63,7 @@ where
 /// # use std::future::Future;
 /// #
 /// struct CheckService;
-/// 
+///
 /// impl<ReqBody, ResBody> AsyncPredicate<Request<ReqBody>, ResBody> for CheckService
 /// where
 ///     ReqBody: Send + 'static,
@@ -72,7 +72,7 @@ where
 ///     type Request = Request<ReqBody>;
 ///     type Response = Response<ResBody>;
 ///     type Future = Pin<Box<dyn Future<Output = Result<Self::Request, Self::Response>> + Send>>;
-/// 
+///
 ///     fn check(&mut self, request: Request<ReqBody>) -> Self::Future {
 ///         Box::pin(async move {
 ///             // do something check
@@ -81,7 +81,7 @@ where
 ///     }
 /// }
 /// ```
-pub trait AsyncPredicate<Request, B> {
+pub trait AsyncPredicate<Request> {
     /// The type of requests returned by [`check`](AsyncPredicate::check)
     ///
     /// Thies request is forwarded to the inner service if the predicate
@@ -100,7 +100,7 @@ pub trait AsyncPredicate<Request, B> {
     fn check(&mut self, request: Request) -> Self::Future;
 }
 
-impl<T, Req, Res, B, U, F> AsyncPredicate<T, B> for F
+impl<T, Req, Res, U, F> AsyncPredicate<T> for F
 where
     F: FnMut(T) -> U,
     U: Future<Output = Result<Req, Res>>,

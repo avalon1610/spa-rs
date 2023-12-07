@@ -1,8 +1,8 @@
 //! A tower middleware who can reading and writing session data from Cookie.
 //!
 use crate::filter::Predicate;
-use axum::headers::{Cookie, HeaderMapExt};
-use http::{Request, Response, StatusCode};
+use axum::{extract::Request, http::StatusCode, response::Response};
+use headers::{Cookie, HeaderMapExt};
 use parking_lot::RwLock;
 use std::{cmp::PartialEq, collections::HashMap, sync::Arc};
 
@@ -88,14 +88,14 @@ impl<T> AddSession<T> {
     }
 }
 
-impl<T, ResBody, ReqBody> Predicate<Request<ReqBody>, ResBody> for AddSession<T>
+impl<T> Predicate<Request> for AddSession<T>
 where
     T: Send + Sync + 'static,
 {
-    type Request = Request<ReqBody>;
-    type Response = Response<ResBody>;
+    type Request = Request;
+    type Response = Response;
 
-    fn check(&mut self, mut request: Request<ReqBody>) -> Result<Self::Request, Self::Response> {
+    fn check(&mut self, mut request: Request) -> Result<Self::Request, Self::Response> {
         request.extensions_mut().insert(self.0.clone());
         Ok(request)
     }
@@ -138,15 +138,14 @@ impl<T> RequireSession<T> {
     }
 }
 
-impl<T, ResBody, ReqBody> Predicate<Request<ReqBody>, ResBody> for RequireSession<T>
+impl<T> Predicate<Request> for RequireSession<T>
 where
     T: Clone + Send + Sync + 'static,
-    ResBody: Default,
 {
-    type Request = Request<ReqBody>;
-    type Response = Response<ResBody>;
+    type Request = Request;
+    type Response = Response;
 
-    fn check(&mut self, mut request: Request<ReqBody>) -> Result<Self::Request, Self::Response> {
+    fn check(&mut self, mut request: Request) -> Result<Self::Request, Self::Response> {
         if let Some(cookie) = request.headers().typed_get::<Cookie>() {
             let sessions = self.0.inner.read();
             for (k, v) in cookie.iter() {
