@@ -250,7 +250,7 @@ impl SpaServer {
                 self.app.fallback(forwarded_to_dev).layer(Extension(addr))
             } else {
                 self.app.fallback_service(
-                    get_service(ServeDir::new(&embeded_dir).fallback(ServeFile::new(&index_file)))
+                    get_service(ServeDir::new(&embeded_dir).fallback(ServeFile::new(index_file)))
                         .layer(Self::add_cache_control())
                         .handle_error(|e: anyhow::Error| async move {
                             (

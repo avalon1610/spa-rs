@@ -132,9 +132,9 @@ where
         Box::pin(async move {
             if let Some(auth_header) = request.headers().get("Authorization") {
                 let auth = digest::Authorization::from_header(
-                    auth_header.to_str().map_err(|e| bad_request(e))?,
+                    auth_header.to_str().map_err(bad_request)?,
                 )
-                .map_err(|e| bad_request(e))?;
+                .map_err(bad_request)?;
 
                 return auth.check(
                     inner.username(),
@@ -219,7 +219,7 @@ mod digest {
                 self.realm,
                 password.as_ref()
             ));
-            let ha2 = md5::compute(format!("{}:{}", request.method().to_string(), self.uri));
+            let ha2 = md5::compute(format!("{}:{}", request.method(), self.uri));
             let password = md5::compute(format!(
                 "{:x}:{}:{}:{}:{}:{:x}",
                 ha1, self.nonce, self.nc, self.cnonce, self.qop, ha2
@@ -246,7 +246,7 @@ mod digest {
             }
 
             let mut result = Authorization::default();
-            for c in content.split(',').into_iter() {
+            for c in content.split(',') {
                 let c = c.trim();
                 let (k, v) = c
                     .split_once('=')
