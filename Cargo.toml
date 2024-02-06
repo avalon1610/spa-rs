@@ -2,6 +2,10 @@
 edition = "2021"
 name = "spa-rs"
 version = "0.7.0"
+description = "Embed all SPA web application files and release as a single binary executable."
+license = "MIT"
+homepage = "https://github.com/avalon1610/spa-rs"
+repository = "https://github.com/avalon1610/spa-rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
