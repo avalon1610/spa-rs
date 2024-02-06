@@ -47,10 +47,11 @@
 use anyhow::{anyhow, Context, Result};
 use axum::{
     body::Bytes,
-    body::{Body, HttpBody},
+    body::HttpBody,
+    extract::{Host, Request},
     http::HeaderValue,
     response::Response,
-    routing::{get_service, Route},
+    routing::{any, get_service, Route},
 };
 #[cfg(feature = "openssl")]
 use axum_server::tls_openssl::OpenSSLConfig;
@@ -58,19 +59,20 @@ use axum_server::tls_openssl::OpenSSLConfig;
 use axum_server::tls_rustls::RustlsConfig;
 use http::{
     header::{self},
-    Request, StatusCode,
+    StatusCode,
 };
 #[cfg(feature = "reverse-proxy")]
 use http::{Method, Uri};
 use log::{debug, error, warn};
 use std::{
+    collections::HashMap,
     convert::Infallible,
     env::current_exe,
     fs::{self, create_dir_all},
     net::SocketAddr,
     path::{Path, PathBuf},
 };
-use tower::{Layer, Service};
+use tower::{Layer, Service, ServiceExt as TowerServiceExt};
 use tower_http::{
     services::{ServeDir, ServeFile},
     set_header::SetResponseHeaderLayer,
@@ -95,13 +97,19 @@ pub use axum_help::*;
 ///     - if still get 404, it will redirect to SPA index.html
 ///
 #[derive(Default)]
-pub struct SpaServer {
+pub struct SpaServer<T = ()>
+where
+    T: Clone + Send + Sync + 'static,
+{
     static_path: Vec<(String, PathBuf)>,
     port: u16,
-    app: Router,
+    main_router: Router,
+    api_router: Router,
+    data: Option<T>,
     forward: Option<String>,
     release_path: PathBuf,
     extra_layer: Vec<Box<dyn FnOnce(Router) -> Router>>,
+    host_routers: HashMap<String, Router>,
 }
 
 #[cfg(feature = "reverse-proxy")]
@@ -146,30 +154,36 @@ async fn forwarded_to_dev() {
     unreachable!("reverse-proxy not enabled, should never call forwarded_to_dev")
 }
 
-impl SpaServer {
+impl<T> SpaServer<T>
+where
+    T: Clone + Send + Sync + 'static,
+{
     /// Just new(), nothing special
     pub fn new() -> Result<Self> {
         Ok(Self {
             static_path: Vec::new(),
             port: 8080,
-            app: Router::new(),
+            main_router: Router::new(),
             forward: None,
             release_path: current_exe()?
                 .parent()
                 .ok_or_else(|| anyhow!("no parent in current_exe"))?
                 .join(format!(".{}_static_files", env!("CARGO_PKG_NAME"))),
             extra_layer: Vec::new(),
+            host_routers: HashMap::new(),
+            api_router: Router::new(),
+            data: None,
         })
     }
 
     /// Specific server context data
     ///
     /// This is similar to [axum middleware](https://docs.rs/axum/latest/axum/#middleware)
-    pub fn data<T>(mut self, data: T) -> Self
+    pub fn data(mut self, data: T) -> Self
     where
         T: Clone + Send + Sync + 'static,
     {
-        self.app = self.app.layer(Extension(data));
+        self.data = Some(data);
         self
     }
 
@@ -179,11 +193,11 @@ impl SpaServer {
     pub fn layer<L, NewResBody>(mut self, layer: L) -> Self
     where
         L: Layer<Route> + Clone + Send + 'static,
-        L::Service: Service<Request<Body>, Response = Response<NewResBody>, Error = Infallible>
+        L::Service: Service<Request, Response = Response<NewResBody>, Error = Infallible>
             + Clone
             + Send
             + 'static,
-        <L::Service as Service<Request<Body>>>::Future: Send + 'static,
+        <L::Service as Service<Request>>::Future: Send + 'static,
         NewResBody: HttpBody<Data = Bytes> + Send + 'static,
         NewResBody::Error: Into<BoxError>,
     {
@@ -246,10 +260,12 @@ impl SpaServer {
             let embeded_dir = root.release(self.release_path)?;
             let index_file = embeded_dir.clone().join("index.html");
 
-            self.app = if let Some(addr) = self.forward {
-                self.app.fallback(forwarded_to_dev).layer(Extension(addr))
+            self.api_router = if let Some(addr) = self.forward {
+                self.api_router
+                    .fallback(forwarded_to_dev)
+                    .layer(Extension(addr))
             } else {
-                self.app.fallback_service(
+                self.api_router.fallback_service(
                     get_service(ServeDir::new(&embeded_dir).fallback(ServeFile::new(index_file)))
                         .layer(Self::add_cache_control())
                         .handle_error(|e: anyhow::Error| async move {
@@ -267,7 +283,7 @@ impl SpaServer {
         }
 
         for sf in self.static_path {
-            self.app = self.app.nest_service(
+            self.api_router = self.api_router.nest_service(
                 &sf.0,
                 get_service(ServeDir::new(&sf.1))
                     .layer(Self::add_cache_control())
@@ -284,8 +300,23 @@ impl SpaServer {
             )
         }
 
+        let main_handler = |Host(hostname): Host, request: Request| async move {
+            if let Some(router) = self.host_routers.remove(&hostname) {
+                router.oneshot(request).await
+            } else {
+                self.api_router.oneshot(request).await
+            }
+        };
+        self.main_router = Router::new()
+            .route("/", any(main_handler.clone()))
+            .route("/*path", any(main_handler));
+
+        if let Some(data) = self.data {
+            self.main_router = self.main_router.layer(Extension(data));
+        }
+
         for layer in self.extra_layer {
-            self.app = layer(self.app)
+            self.main_router = layer(self.main_router)
         }
 
         let addr = format!("0.0.0.0:{}", self.port).parse()?;
@@ -317,11 +348,17 @@ impl SpaServer {
                     )
                 }
             }
-            .serve(self.app.into_make_service_with_connect_info::<SocketAddr>())
+            .serve(
+                self.main_router
+                    .into_make_service_with_connect_info::<SocketAddr>(),
+            )
             .await?;
         } else {
             axum_server::bind(addr)
-                .serve(self.app.into_make_service_with_connect_info::<SocketAddr>())
+                .serve(
+                    self.main_router
+                        .into_make_service_with_connect_info::<SocketAddr>(),
+                )
                 .await
                 .context("serve server error")?;
         }
@@ -332,7 +369,7 @@ impl SpaServer {
     /// Setting up server router, see example for usage.
     ///
     pub fn route(mut self, path: impl AsRef<str>, router: Router) -> Self {
-        self.app = self.app.nest(path.as_ref(), router);
+        self.api_router = self.api_router.nest(path.as_ref(), router);
         self
     }
 
@@ -348,6 +385,13 @@ impl SpaServer {
     /// Unlike [spa_server_root], file in this path can be changed in runtime.
     pub fn static_path(mut self, path: impl Into<String>, dir: impl Into<PathBuf>) -> Self {
         self.static_path.push((path.into(), dir.into()));
+        self
+    }
+
+    /// add host based router
+    ///
+    pub fn host_router(mut self, host: impl Into<String>, router: Router) -> Self {
+        self.host_routers.insert(host.into(), router);
         self
     }
 
