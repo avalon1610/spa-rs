@@ -77,7 +77,6 @@ use tower_http::{
     services::{ServeDir, ServeFile},
     set_header::SetResponseHeaderLayer,
 };
-
 pub mod rust_embed {
     pub use rust_embed::*;
 }
@@ -320,7 +319,7 @@ where
         }
 
         let addr = format!("0.0.0.0:{}", self.port).parse()?;
-        if let Some(_config) = config {
+        if let Some(config) = config {
             #[cfg(all(feature = "openssl", feature = "rustls"))]
             compile_error!("Feature openssl and Feature rustls can not be enabled together");
 
@@ -328,22 +327,18 @@ where
             {
                 #[cfg(feature = "rustls")]
                 {
+                    let certificate = std::fs::read(config.certificate)?;
+                    let private_key = std::fs::read(config.private_key)?;
                     axum_server::bind_rustls(
                         addr,
-                        RustlsConfig::from_pem(_config.certificate, _config.private_key).await?,
+                        RustlsConfig::from_pem(certificate, private_key).await?,
                     )
                 }
                 #[cfg(feature = "openssl")]
                 {
-                    let temp_dir = std::env::temp_dir().join(env!("CARGO_PKG_NAME"));
-                    std::fs::create_dir_all(&temp_dir)?;
-                    let cert_file = temp_dir.join("cert.pem");
-                    let key_file = temp_dir.join("key.pem");
-                    std::fs::write(&cert_file, &_config.certificate)?;
-                    std::fs::write(&key_file, &_config.private_key)?;
                     axum_server::bind_openssl(
                         addr,
-                        OpenSSLConfig::from_pem_file(cert_file, key_file)
+                        OpenSSLConfig::from_pem_file(config.certificate, config.private_key)
                             .context("openssl load pem file error")?,
                     )
                 }
@@ -404,8 +399,8 @@ where
 }
 
 pub struct HttpsConfig {
-    pub certificate: Vec<u8>,
-    pub private_key: Vec<u8>,
+    pub certificate: PathBuf,
+    pub private_key: PathBuf,
 }
 
 /// setup https pems   
@@ -419,7 +414,7 @@ pub struct HttpsConfig {
 /// pem file name should be [`cert.pem`] and [`key.pem`]
 ///
 #[macro_export]
-macro_rules! https_pems {
+macro_rules! embed_https_pems {
     ($path: literal) => {
         #[derive(spa_rs::rust_embed::RustEmbed)]
         #[folder = $path]
@@ -428,29 +423,35 @@ macro_rules! https_pems {
 
     () => {{
         let https_config = || -> anyhow::Result<spa_rs::HttpsConfig> {
-            let mut cert = Vec::new();
-            let mut key = Vec::new();
+            let mut base_path = std::env::temp_dir().join(format!(
+                "{}_{}",
+                env!("CARGO_PKG_NAME"),
+                env!("CARGO_PKG_VERSION")
+            ));
+            let _ = std::fs::create_dir_all(&base_path);
+            let mut cert_path = None;
+            let mut key_path = None;
             for file in HttpsPems::iter() {
                 if let Some(f) = HttpsPems::get(&file) {
-                    macro_rules! setup {
-                        ($t: expr) => {
-                            if file == format!("{}.pem", stringify!($t)) {
-                                $t = f.data.to_vec();
-                            }
-                        };
+                    if file == "key.pem" {
+                        key_path = Some(base_path.join("key.pem"));
+                        std::fs::write(key_path.as_ref().unwrap(), &f.data)?;
                     }
-                    setup!(cert);
-                    setup!(key);
+
+                    if file == "cert.pem" {
+                        cert_path = Some(base_path.join("cert.pem"));
+                        std::fs::write(cert_path.as_ref().unwrap(), &f.data)?;
+                    }
                 }
             }
 
-            if cert.is_empty() || key.is_empty() {
+            if cert_path.is_none() || key_path.is_none() {
                 anyhow::bail!("invalid ssl cert or key embed file");
             }
 
             Ok(spa_rs::HttpsConfig {
-                certificate: cert,
-                private_key: key,
+                certificate: cert_path.unwrap(),
+                private_key: key_path.unwrap(),
             })
         };
         https_config()
