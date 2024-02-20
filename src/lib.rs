@@ -300,8 +300,12 @@ where
         }
 
         let main_handler = |Host(hostname): Host, request: Request| async move {
-            if let Some(router) = self.host_routers.remove(&hostname) {
-                router.oneshot(request).await
+            if let Some((_, router)) = self
+                .host_routers
+                .iter()
+                .find(|(k, _v)| hostname.ends_with(*k))
+            {
+                router.clone().oneshot(request).await
             } else {
                 self.api_router.oneshot(request).await
             }
