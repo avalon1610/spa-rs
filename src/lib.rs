@@ -46,17 +46,17 @@
 //! ```
 use anyhow::{anyhow, Context, Result};
 use axum::{
-    body::Bytes,
-    body::HttpBody,
-    extract::{Host, Request},
+    body::{Bytes, HttpBody},
+    extract::Request,
     http::HeaderValue,
     response::Response,
-    routing::{any, get_service, Route},
+    routing::{get_service, Route},
 };
 #[cfg(feature = "openssl")]
 use axum_server::tls_openssl::OpenSSLConfig;
 #[cfg(feature = "rustls")]
 use axum_server::tls_rustls::RustlsConfig;
+use futures_util::future::BoxFuture;
 use http::{
     header::{self},
     StatusCode,
@@ -70,7 +70,8 @@ use std::{
     env::current_exe,
     fs::{self, create_dir_all},
     net::SocketAddr,
-    path::{Path, PathBuf},
+    path::PathBuf,
+    sync::Arc,
 };
 use tower::{Layer, Service, ServiceExt as TowerServiceExt};
 use tower_http::{
@@ -102,8 +103,8 @@ where
 {
     static_path: Vec<(String, PathBuf)>,
     port: u16,
-    main_router: Router,
-    api_router: Router,
+    // main_router: Router,
+    router: Router,
     data: Option<T>,
     forward: Option<String>,
     release_path: PathBuf,
@@ -162,7 +163,6 @@ where
         Ok(Self {
             static_path: Vec::new(),
             port: 8080,
-            main_router: Router::new(),
             forward: None,
             release_path: current_exe()?
                 .parent()
@@ -170,7 +170,7 @@ where
                 .join(format!(".{}_static_files", env!("CARGO_PKG_NAME"))),
             extra_layer: Vec::new(),
             host_routers: HashMap::new(),
-            api_router: Router::new(),
+            router: Router::new(),
             data: None,
         })
     }
@@ -259,12 +259,12 @@ where
             let embeded_dir = root.release(self.release_path)?;
             let index_file = embeded_dir.clone().join("index.html");
 
-            self.api_router = if let Some(addr) = self.forward {
-                self.api_router
+            self.router = if let Some(addr) = self.forward {
+                self.router
                     .fallback(forwarded_to_dev)
                     .layer(Extension(addr))
             } else {
-                self.api_router.fallback_service(
+                self.router.fallback_service(
                     get_service(ServeDir::new(&embeded_dir).fallback(ServeFile::new(index_file)))
                         .layer(Self::add_cache_control())
                         .handle_error(|e: anyhow::Error| async move {
@@ -282,7 +282,7 @@ where
         }
 
         for sf in self.static_path {
-            self.api_router = self.api_router.nest_service(
+            self.router = self.router.nest_service(
                 &sf.0,
                 get_service(ServeDir::new(&sf.1))
                     .layer(Self::add_cache_control())
@@ -299,27 +299,16 @@ where
             )
         }
 
-        let main_handler = |Host(hostname): Host, request: Request| async move {
-            if let Some((_, router)) = self
-                .host_routers
-                .iter()
-                .find(|(k, _v)| hostname.ends_with(*k))
-            {
-                router.clone().oneshot(request).await
-            } else {
-                self.api_router.oneshot(request).await
-            }
-        };
-        self.main_router = Router::new()
-            .route("/", any(main_handler.clone()))
-            .route("/*path", any(main_handler));
+        self.router = self
+            .router
+            .layer(MatchHostLayer::new(Arc::new(self.host_routers.clone())));
 
         if let Some(data) = self.data {
-            self.main_router = self.main_router.layer(Extension(data));
+            self.router = self.router.layer(Extension(data));
         }
 
         for layer in self.extra_layer {
-            self.main_router = layer(self.main_router)
+            self.router = layer(self.router)
         }
 
         let addr = format!("0.0.0.0:{}", self.port).parse()?;
@@ -348,14 +337,14 @@ where
                 }
             }
             .serve(
-                self.main_router
+                self.router
                     .into_make_service_with_connect_info::<SocketAddr>(),
             )
             .await?;
         } else {
             axum_server::bind(addr)
                 .serve(
-                    self.main_router
+                    self.router
                         .into_make_service_with_connect_info::<SocketAddr>(),
                 )
                 .await
@@ -368,7 +357,7 @@ where
     /// Setting up server router, see example for usage.
     ///
     pub fn route(mut self, path: impl AsRef<str>, router: Router) -> Self {
-        self.api_router = self.api_router.nest(path.as_ref(), router);
+        self.router = self.router.nest(path.as_ref(), router);
         self
     }
 
@@ -399,6 +388,70 @@ where
             header::CACHE_CONTROL,
             HeaderValue::from_static("max-age=300"),
         )
+    }
+}
+
+#[derive(Clone)]
+struct MatchHostLayer {
+    host_routers: Arc<HashMap<String, Router>>,
+}
+
+impl<S> Layer<S> for MatchHostLayer {
+    type Service = MatchHost<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        MatchHost {
+            inner,
+            host_routers: self.host_routers.clone(),
+        }
+    }
+}
+
+impl MatchHostLayer {
+    pub fn new(host_routers: Arc<HashMap<String, Router>>) -> Self {
+        Self { host_routers }
+    }
+}
+
+#[derive(Clone)]
+struct MatchHost<S> {
+    inner: S,
+    host_routers: Arc<HashMap<String, Router>>,
+}
+
+impl<S> Service<Request> for MatchHost<S>
+where
+    S: Service<Request, Response = Response, Error = Infallible> + Clone + Send + 'static,
+    S::Future: Send + 'static,
+    S::Error: Into<Infallible>,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = BoxFuture<'static, Result<S::Response, S::Error>>;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: Request) -> Self::Future {
+        let host_routers = self.host_routers.clone();
+        let mut srv = self.inner.clone();
+        Box::pin(async move {
+            let hostname = req
+                .headers()
+                .get(header::HOST)
+                .and_then(|h| h.to_str().ok())
+                .unwrap_or_default();
+
+            if let Some((_, router)) = host_routers.iter().find(|(k, _v)| hostname.ends_with(*k)) {
+                router.clone().oneshot(req).await
+            } else {
+                srv.call(req).await.map_err(Into::into)
+            }
+        })
     }
 }
 
@@ -492,7 +545,7 @@ pub trait SpaStatic: rust_embed::RustEmbed {
         for file in Self::iter() {
             match Self::get(&file) {
                 Some(f) => {
-                    if let Some(p) = Path::new(file.as_ref()).parent() {
+                    if let Some(p) = std::path::Path::new(file.as_ref()).parent() {
                         let parent_dir = target_dir.join(p);
                         create_dir_all(parent_dir)?;
                     }
