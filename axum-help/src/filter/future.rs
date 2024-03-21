@@ -4,6 +4,7 @@ use futures_core::ready;
 use pin_project_lite::pin_project;
 use std::{
     future::Future,
+    marker::PhantomData,
     pin::Pin,
     task::{Context, Poll},
 };
@@ -41,12 +42,13 @@ pin_project! {
     ///
     pub struct AsyncResponseFuture<P, S, R>
     where
-        P: AsyncPredicate<R>,
+        P:  AsyncPredicate<R>,
         S: Service<P::Request>,
     {
         #[pin]
         state: State<P::Future, S::Future>,
-        service: S
+        service: S,
+        _p: PhantomData<P>
     }
 }
 
@@ -70,6 +72,7 @@ where
         Self {
             state: State::Check { check },
             service,
+            _p: PhantomData,
         }
     }
 }

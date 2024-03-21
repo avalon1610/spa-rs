@@ -32,7 +32,10 @@ use future::{AsyncResponseFuture, ResponseFuture};
 use futures_util::StreamExt;
 pub use layer::{AsyncFilterExLayer, FilterExLayer};
 pub use predicate::{AsyncPredicate, Predicate};
-use std::task::{Context, Poll};
+use std::{
+    marker::PhantomData,
+    task::{Context, Poll},
+};
 use tower::Service;
 
 mod future;
@@ -123,35 +126,50 @@ where
 /// asynchronous [predicate](AsyncPredicate)
 ///
 #[derive(Debug)]
-pub struct AsyncFilterEx<T, U> {
+pub struct AsyncFilterEx<T, U, R>
+where
+    U: AsyncPredicate<R>,
+{
     inner: T,
     predicate: U,
+    _r: PhantomData<R>,
 }
 
-impl<T: Clone, U: Clone> Clone for AsyncFilterEx<T, U> {
+impl<T: Clone, U: Clone, R> Clone for AsyncFilterEx<T, U, R>
+where
+    U: AsyncPredicate<R>,
+{
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
             predicate: self.predicate.clone(),
+            _r: PhantomData,
         }
     }
 }
 
-impl<T, U> AsyncFilterEx<T, U> {
+impl<T, U, R> AsyncFilterEx<T, U, R>
+where
+    U: AsyncPredicate<R>,
+{
     /// Returns a new [AsyncFilterEx] service wrapping `inner`.
     pub fn new(inner: T, predicate: U) -> Self {
-        Self { inner, predicate }
+        Self {
+            inner,
+            predicate,
+            _r: PhantomData,
+        }
     }
 
     /// Returns a new [Layer](tower::Layer) that wraps services with a [AsyncFilterEx] service
     /// with the given [AsyncPredicate]
     ///
-    pub fn layer(predicate: U) -> AsyncFilterExLayer<U> {
+    pub fn layer(predicate: U) -> AsyncFilterExLayer<U, R> {
         AsyncFilterExLayer::new(predicate)
     }
 
     /// Check a `Request` value against thie filter's predicate
-    pub async fn check<R>(&mut self, request: R) -> Result<U::Request, U::Response>
+    pub async fn check(&mut self, request: R) -> Result<U::Request, U::Response>
     where
         U: AsyncPredicate<R>,
     {
@@ -174,7 +192,7 @@ impl<T, U> AsyncFilterEx<T, U> {
     }
 }
 
-impl<T, U> Service<Request> for AsyncFilterEx<T, U>
+impl<T, U> Service<Request> for AsyncFilterEx<T, U, Request>
 where
     T: Service<U::Request, Response = Response> + Clone,
     U: AsyncPredicate<Request, Response = Response>,

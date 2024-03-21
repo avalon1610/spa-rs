@@ -1,5 +1,5 @@
+use self::digest::unauthorized;
 use anyhow::Result;
-use async_trait::async_trait;
 use axum::{
     extract::Request,
     http::StatusCode,
@@ -10,20 +10,37 @@ use headers::{authorization::Basic, Authorization, HeaderMapExt};
 use parking_lot::Mutex;
 use std::{collections::VecDeque, fmt::Display, future::Future, pin::Pin, sync::Arc};
 
-use self::digest::unauthorized;
-
-#[async_trait]
 pub trait AuthCheckPredicate {
     type CheckInfo: Clone + Send + Sync + 'static;
 
-    async fn check(
+    fn check(
         &self,
         username: impl Into<String> + Send,
         password: impl Into<String> + Send,
-    ) -> Result<Self::CheckInfo>;
+    ) -> impl Future<Output = Result<Self::CheckInfo>> + Send;
 
-    fn username(&self) -> &str;
-    fn password(&self) -> &str;
+    fn username(&self) -> &str {
+        unimplemented!()
+    }
+
+    fn password(&self) -> &str {
+        unimplemented!()
+    }
+}
+
+impl<T> AuthCheckPredicate for Arc<T>
+where
+    T: AuthCheckPredicate,
+{
+    type CheckInfo = T::CheckInfo;
+
+    fn check(
+        &self,
+        username: impl Into<String> + Send,
+        password: impl Into<String> + Send,
+    ) -> impl Future<Output = Result<Self::CheckInfo>> + Send {
+        self.as_ref().check(username, password)
+    }
 }
 
 #[derive(Clone)]
@@ -53,7 +70,7 @@ where
     type Response = Response;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Request, Self::Response>> + Send>>;
 
-    fn check(&mut self, mut request: Request) -> Self::Future {
+    fn check(&self, mut request: Request) -> Self::Future {
         let mut err = self.1.clone();
         let auth = self.0.clone();
         Box::pin(async move {
@@ -124,17 +141,16 @@ where
     type Response = Response;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Request, Self::Response>> + Send>>;
 
-    fn check(&mut self, request: Request) -> Self::Future {
+    fn check(&self, request: Request) -> Self::Future {
         let err = self.err.clone();
         let inner = self.inner.clone();
         let srv_name = self.srv_name.clone();
         let nonces = self.nonces.clone();
         Box::pin(async move {
             if let Some(auth_header) = request.headers().get("Authorization") {
-                let auth = digest::Authorization::from_header(
-                    auth_header.to_str().map_err(bad_request)?,
-                )
-                .map_err(bad_request)?;
+                let auth =
+                    digest::Authorization::from_header(auth_header.to_str().map_err(bad_request)?)
+                        .map_err(bad_request)?;
 
                 return auth.check(
                     inner.username(),

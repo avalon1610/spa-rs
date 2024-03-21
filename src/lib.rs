@@ -112,41 +112,39 @@ where
     host_routers: HashMap<String, Router>,
 }
 
+#[axum::debug_handler]
 #[cfg(feature = "reverse-proxy")]
 async fn forwarded_to_dev(
     Extension(forward_addr): Extension<String>,
     uri: Uri,
     method: Method,
 ) -> HttpResult<Response> {
-    compile_error!("Can not use now, wait for reqwest upgrade hyper to 1.0");
-    // use http::uri::Scheme;
+    use axum::http::Response;
+    use http::uri::Scheme;
 
-    // if method == Method::GET {
-    //     let client = reqwest::Client::builder().no_proxy().build()?;
-    //     let mut parts = uri.into_parts();
-    //     parts.authority = Some(forward_addr.parse()?);
-    //     if parts.scheme.is_none() {
-    //         parts.scheme = Some(Scheme::HTTP);
-    //     }
-    //     let url = Uri::from_parts(parts)?.to_string();
+    if method == Method::GET {
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let mut parts = uri.into_parts();
+        parts.authority = Some(forward_addr.parse()?);
+        if parts.scheme.is_none() {
+            parts.scheme = Some(Scheme::HTTP);
+        }
+        let url = Uri::from_parts(parts)?.to_string();
 
-    //     println!("forward url: {}", url);
-    //     let response = client.get(url).send().await?;
-    //     let status = response.status();
-    //     let headers = response.headers().clone();
-    //     let bytes = response.bytes().await?;
+        println!("forward url: {}", url);
+        let response = client.get(url).send().await?;
+        let response: http::Response<_> = response.into();
+        let (parts, body) = response.into_parts();
+        let body = body.as_bytes().map(|b| b.to_vec()).unwrap_or_default();
 
-    //     let mut response = Response::builder().status(status);
-    //     *(response.headers_mut().unwrap()) = headers;
-    //     let response = response.body(bytes)?;
-    //     return Ok(response);
-    // }
+        let response = Response::from_parts(parts, body.into());
+        return Ok(response);
+    }
 
-    // Err(HttpError {
-    //     message: "Method not allowed".to_string(),
-    //     status_code: StatusCode::METHOD_NOT_ALLOWED,
-    // })
-    todo!()
+    Err(HttpError {
+        message: "Method not allowed".to_string(),
+        status_code: StatusCode::METHOD_NOT_ALLOWED,
+    })
 }
 
 #[cfg(not(feature = "reverse-proxy"))]
@@ -312,6 +310,7 @@ where
         }
 
         let addr = format!("0.0.0.0:{}", self.port).parse()?;
+        #[allow(unused_variables)]
         if let Some(config) = config {
             #[cfg(all(feature = "openssl", feature = "rustls"))]
             compile_error!("Feature openssl and Feature rustls can not be enabled together");

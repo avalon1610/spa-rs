@@ -1,4 +1,4 @@
-use std::future::Future;
+use std::{future::Future, sync::Arc};
 
 /// Checks a request synchronously
 ///
@@ -37,17 +37,17 @@ pub trait Predicate<Request> {
     /// Check whether the given request should be forwarded.
     ///
     /// If the future resolves with [`Ok`], the request is forwarded to the inner service.
-    fn check(&mut self, request: Request) -> Result<Self::Request, Self::Response>;
+    fn check(&self, request: Request) -> Result<Self::Request, Self::Response>;
 }
 
 impl<T, Req, Res, F> Predicate<T> for F
 where
-    F: FnMut(T) -> Result<Req, Res>,
+    F: Fn(T) -> Result<Req, Res>,
 {
     type Request = Req;
     type Response = Res;
 
-    fn check(&mut self, request: T) -> Result<Self::Request, Self::Response> {
+    fn check(&self, request: T) -> Result<Self::Request, Self::Response> {
         self(request)
     }
 }
@@ -81,10 +81,10 @@ where
 ///     }
 /// }
 /// ```
-pub trait AsyncPredicate<Request> {
+pub trait AsyncPredicate<R> {
     /// The type of requests returned by [`check`](AsyncPredicate::check)
     ///
-    /// Thies request is forwarded to the inner service if the predicate
+    /// This request is forwarded to the inner service if the predicate
     /// succeeds.
     type Request;
 
@@ -97,19 +97,32 @@ pub trait AsyncPredicate<Request> {
     /// Check whether the given request should be forwarded.
     ///
     /// If the future resolves with [`Ok`], the request is forwarded to the inner service.
-    fn check(&mut self, request: Request) -> Self::Future;
+    fn check(&self, request: R) -> Self::Future;
 }
 
 impl<T, Req, Res, U, F> AsyncPredicate<T> for F
 where
-    F: FnMut(T) -> U,
+    F: Fn(T) -> U,
     U: Future<Output = Result<Req, Res>>,
 {
     type Request = Req;
     type Response = Res;
     type Future = U;
 
-    fn check(&mut self, request: T) -> Self::Future {
+    fn check(&self, request: T) -> Self::Future {
         self(request)
+    }
+}
+
+impl<T, R> AsyncPredicate<R> for Arc<T>
+where
+    T: AsyncPredicate<R>,
+{
+    type Request = T::Request;
+    type Response = T::Response;
+    type Future = T::Future;
+
+    fn check(&self, request: R) -> Self::Future {
+        (**self).check(request)
     }
 }
