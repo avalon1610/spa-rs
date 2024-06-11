@@ -103,7 +103,6 @@ where
 {
     static_path: Vec<(String, PathBuf)>,
     port: u16,
-    // main_router: Router,
     router: Router,
     data: Option<T>,
     forward: Option<String>,

@@ -1,7 +1,7 @@
 [package]
 edition = "2021"
 name = "spa-rs"
-version = "0.8.3"
+version = "0.8.4"
 description = "Embed all SPA web application files and release as a single binary executable."
 license = "MIT"
 homepage = "https://github.com/avalon1610/spa-rs"
@@ -21,7 +21,8 @@ md5 = "0.7.0"
 parking_lot = "0.12.0"
 rand = "0.8.5"
 reqwest = { version = "0.12.0", default-features = false, optional = true }
-rust-embed = "8.0.0"
+# 8.3.0 or later can not re-export rust-embed
+rust-embed = "=8.3.0"
 tower = { version = "0.4.12" }
 tower-http = { version = "0.5.0", features = ["fs", "set-header"] }
 
