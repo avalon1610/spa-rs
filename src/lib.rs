@@ -78,9 +78,7 @@ use tower_http::{
     services::{ServeDir, ServeFile},
     set_header::SetResponseHeaderLayer,
 };
-pub mod rust_embed {
-    pub use rust_embed::*;
-}
+pub use rust_embed;
 
 pub use axum::*;
 pub mod auth;
@@ -472,6 +470,7 @@ pub struct HttpsConfig {
 macro_rules! embed_https_pems {
     ($path: literal) => {
         #[derive(spa_rs::rust_embed::RustEmbed)]
+        #[crate_path = "spa_rs::rust_embed"]
         #[folder = $path]
         struct HttpsPems;
     };
@@ -518,9 +517,8 @@ macro_rules! embed_https_pems {
 #[macro_export]
 macro_rules! spa_server_root {
     ($root: literal) => {
-        use spa_rs::rust_embed;
-
-        #[derive(rust_embed::RustEmbed)]
+        #[derive(spa_rs::rust_embed::RustEmbed)]
+        #[crate_path = "spa_rs::rust_embed"]
         #[folder = $root]
         struct StaticFiles;
 
