@@ -64,6 +64,7 @@ use http::{
 #[cfg(feature = "reverse-proxy")]
 use http::{Method, Uri};
 use log::{debug, error, warn};
+pub use rust_embed;
 use std::{
     collections::HashMap,
     convert::Infallible,
@@ -73,12 +74,11 @@ use std::{
     path::PathBuf,
     sync::Arc,
 };
-use tower::{Layer, Service, ServiceExt as TowerServiceExt};
+use tower::{util::ServiceExt as TowerServiceExt, Layer, Service};
 use tower_http::{
     services::{ServeDir, ServeFile},
     set_header::SetResponseHeaderLayer,
 };
-pub use rust_embed;
 
 pub use axum::*;
 pub mod auth;
