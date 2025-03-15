@@ -445,7 +445,7 @@ where
             if let Some((_, router)) = host_routers.iter().find(|(k, _v)| hostname.ends_with(*k)) {
                 router.clone().oneshot(req).await
             } else {
-                srv.call(req).await.map_err(Into::into)
+                srv.call(req).await
             }
         })
     }
