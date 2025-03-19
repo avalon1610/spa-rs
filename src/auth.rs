@@ -70,7 +70,7 @@ where
     type Response = Response;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Request, Self::Response>> + Send>>;
 
-    fn check(&mut self, mut request: Request) -> Self::Future {
+    fn check(&self, mut request: Request) -> Self::Future {
         let mut err = self.1.clone();
         let auth = self.0.clone();
         Box::pin(async move {
@@ -141,7 +141,7 @@ where
     type Response = Response;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Request, Self::Response>> + Send>>;
 
-    fn check(&mut self, request: Request) -> Self::Future {
+    fn check(&self, request: Request) -> Self::Future {
         let err = self.err.clone();
         let inner = self.inner.clone();
         let srv_name = self.srv_name.clone();

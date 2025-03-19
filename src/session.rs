@@ -95,7 +95,7 @@ where
     type Request = Request;
     type Response = Response;
 
-    fn check(&mut self, mut request: Request) -> Result<Self::Request, Self::Response> {
+    fn check(&self, mut request: Request) -> Result<Self::Request, Self::Response> {
         request.extensions_mut().insert(self.0.clone());
         Ok(request)
     }
@@ -145,7 +145,7 @@ where
     type Request = Request;
     type Response = Response;
 
-    fn check(&mut self, mut request: Request) -> Result<Self::Request, Self::Response> {
+    fn check(&self, mut request: Request) -> Result<Self::Request, Self::Response> {
         if let Some(cookie) = request.headers().typed_get::<Cookie>() {
             let sessions = self.0.inner.read();
             for (k, v) in cookie.iter() {
