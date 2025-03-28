@@ -316,6 +316,9 @@ where
             {
                 #[cfg(feature = "rustls")]
                 {
+                    rustls::crypto::aws_lc_rs::default_provider()
+                        .install_default()
+                        .map_err(|e| anyhow!("install default crypto provider error: {:?}", e))?;
                     let certificate = std::fs::read(config.certificate)?;
                     let private_key = std::fs::read(config.private_key)?;
                     axum_server::bind_rustls(

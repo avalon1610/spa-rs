@@ -1,7 +1,7 @@
 [package]
 edition = "2021"
 name = "spa-rs"
-version = "0.8.6"
+version = "0.8.7"
 description = "Embed all SPA web application files and release as a single binary executable."
 license = "MIT"
 homepage = "https://github.com/avalon1610/spa-rs"
@@ -22,6 +22,7 @@ parking_lot = "0.12.0"
 rand = "0.8.5"
 reqwest = { version = "0.12.0", default-features = false, optional = true }
 rust-embed = "8.5"
+rustls = "0.23.25"
 tower = { version = "0.5.2", features = ["util"] }
 tower-http = { version = "0.6.2", features = ["fs", "set-header"] }
 
