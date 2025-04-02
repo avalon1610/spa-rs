@@ -66,23 +66,26 @@ where
 /// will be used.
 #[macro_export]
 macro_rules! http_err {
-    ($status: path, $fmt: literal, $($args: tt)+) => {
-        spa_rs::HttpError {
-            message: format!($fmt, $($args)+),
-            status_code: $status
-        }
-    };
-    ($status: path, $msg: literal) => {
-        spa_rs::HttpError {
-            message: $msg.to_string(),
-            status_code: $status
-        }
-    };
-    ($fmt: literal, $($args: tt)+) => {
-        http_err!(spa_rs::http::StatusCode::INTERNAL_SERVER_ERROR, $fmt, $($args)+)
-    };
-    ($msg: literal) => {
+    ($msg:literal $(,)?) => {
         http_err!(spa_rs::http::StatusCode::INTERNAL_SERVER_ERROR, $msg)
+    };
+    ($status:path, $msg:literal $(,)?) => {
+        http_err!($status, "{}", format_args!($msg))
+    };
+    ($status:path, $err:expr $(,)?) => {
+        http_err!($status, "{:?}", $err)
+    };
+    ($status:path, $fmt:expr, $($args:tt)*) => {
+        $crate::HttpError {
+            message: format!($fmt, $($args)*),
+            status_code: $status
+        }
+    };
+    ($err:expr $(,)?) => {
+        http_err!(spa_rs::http::StatusCode::INTERNAL_SERVER_ERROR, "{:?}", $err)
+    };
+    ($fmt:expr, $($args:tt)*) => {
+        http_err!(spa_rs::http::StatusCode::INTERNAL_SERVER_ERROR, $fmt, $($args)*)
     };
 }
 
@@ -109,8 +112,8 @@ macro_rules! http_err {
 /// ```
 #[macro_export]
 macro_rules! http_bail {
-    ($($args: tt)+) => {
-        return Err(spa_rs::http_err!($($args)+));
+    ($($args:tt)+) => {
+        return Err($crate::http_err!($($args)+));
     };
 }
 
