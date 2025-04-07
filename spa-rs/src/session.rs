@@ -1,14 +1,14 @@
 //! A tower middleware who can reading and writing session data from Cookie.
 //!
-use crate::filter::Predicate;
+use crate::help::filter::Predicate;
 use axum::{extract::Request, http::StatusCode, response::Response};
 use headers::{Cookie, HeaderMapExt};
 use parking_lot::RwLock;
 use std::{cmp::PartialEq, collections::HashMap, sync::Arc};
 
-/// Session object, can access by Extension in RequireSession layer.
+/// Session object, can access by Extension in [`RequireSession`] layer.
 ///
-/// See [RequireSession] example for usage
+/// See [`RequireSession`] example for usage
 #[derive(Clone)]
 pub struct Session<T> {
     /// current session data
@@ -17,9 +17,9 @@ pub struct Session<T> {
     pub all: Arc<SessionStore<T>>,
 }
 
-/// Session storage, can access by Extersion in AddSession layer.
+/// Session storage, can access by Extersion in [`AddSession`] layer.
 ///
-/// See [AddSession] example for usage
+/// See [`AddSession`] example for usage
 #[derive(Debug)]
 pub struct SessionStore<T> {
     key: String,
@@ -27,7 +27,7 @@ pub struct SessionStore<T> {
 }
 
 impl<T: PartialEq> SessionStore<T> {
-    /// return new SessionStore with specific key
+    /// return new [`SessionStore`] with specific key
     pub fn new(key: impl Into<String>) -> Self {
         SessionStore {
             key: key.into(),
@@ -46,21 +46,22 @@ impl<T: PartialEq> SessionStore<T> {
     }
 
     /// remove the session item
-    pub fn remove(&self, v: T) {
-        self.inner.write().retain(|_, x| *x != v);
+    pub fn remove(&self, v: &T) {
+        self.inner.write().retain(|_, x| x != v);
     }
 }
 
 /// Middleware that can access and modify all sessions data. Usually used for **Login** handler
 ///
 /// # Example
-///```
-/// # use spa_rs::routing::{post, Router};
-/// # use spa_rs::Extension;
+///```rust,no_run
+/// # use spa_rs::axum::routing::{post, Router};
+/// # use spa_rs::axum::Extension;
 /// # use spa_rs::session::AddSession;
 /// # use spa_rs::session::SessionStore;
 /// # use axum_help::filter::FilterExLayer;
 /// # use std::sync::Arc;
+/// # use tokio::net::TcpListener;
 /// #
 /// #[derive(PartialEq, Clone)]
 /// struct User;
@@ -76,7 +77,8 @@ impl<T: PartialEq> SessionStore<T> {
 ///     let app = Router::new()
 ///         .route("/login", post(login))
 ///         .layer(FilterExLayer::new(AddSession::new(session.clone())));
-/// #   axum::Server::bind(&"0.0.0.0:3000".parse().unwrap()).serve(app.into_make_service());
+///     let listener = TcpListener::bind("0.0.0.0:3000").await.unwrap();
+///     axum::serve(listener, app).await.unwrap();
 /// }
 ///```
 #[derive(Clone, Debug)]
@@ -104,14 +106,15 @@ where
 /// Middleware that can access and modify all sessions data.
 ///
 /// # Example
-///```
-/// # use spa_rs::routing::{post, Router};
-/// # use spa_rs::Extension;
+///```rust,no_run
+/// # use spa_rs::axum::routing::{post, Router};
+/// # use spa_rs::axum::Extension;
 /// # use spa_rs::session::RequireSession;
 /// # use spa_rs::session::SessionStore;
 /// # use spa_rs::session::Session;
 /// # use axum_help::filter::FilterExLayer;
 /// # use std::sync::Arc;
+/// # use tokio::net::TcpListener;
 /// #
 /// #[derive(PartialEq, Clone, Debug)]
 /// struct User;
@@ -126,7 +129,8 @@ where
 ///     let app = Router::new()
 ///         .route("/action", post(action))
 ///         .layer(FilterExLayer::new(RequireSession::new(session.clone())));
-/// #   axum::Server::bind(&"0.0.0.0:3000".parse().unwrap()).serve(app.into_make_service());
+///     let listener = TcpListener::bind("0.0.0.0:3000").await.unwrap();
+///     axum::serve(listener, app).await.unwrap();
 /// }
 ///```
 #[derive(Clone, Debug)]

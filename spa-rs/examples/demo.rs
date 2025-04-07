@@ -1,7 +1,9 @@
 use anyhow::Result;
-use axum::{extract::Request, http::StatusCode, response::IntoResponse};
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::{extract::Request, routing::get, Router};
 use headers::{authorization::Basic, Authorization, HeaderMapExt};
-use spa_rs::{filter::FilterExLayer, routing::get, routing::Router, spa_server_root, SpaServer};
+use spa_rs::{help::filter::FilterExLayer, spa_server_root, SpaServer};
 
 spa_server_root!("web/dist");
 

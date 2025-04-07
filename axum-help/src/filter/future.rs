@@ -42,8 +42,8 @@ pin_project! {
     ///
     pub struct AsyncResponseFuture<P, S, R>
     where
-        P:  AsyncPredicate<R>,
-        S: Service<P::Request>,
+        P: AsyncPredicate<R>,
+        S: Service<R>,
     {
         #[pin]
         state: State<P::Future, S::Future>,
@@ -66,7 +66,7 @@ pin_project! {
 impl<P, S, R> AsyncResponseFuture<P, S, R>
 where
     P: AsyncPredicate<R>,
-    S: Service<P::Request>,
+    S: Service<R>,
 {
     pub(super) fn new(check: P::Future, service: S) -> Self {
         Self {
@@ -80,7 +80,7 @@ where
 impl<P, S, R> Future for AsyncResponseFuture<P, S, R>
 where
     P: AsyncPredicate<R>,
-    S: Service<P::Request, Response = <P as AsyncPredicate<R>>::Response>,
+    S: Service<R, Response = <P as AsyncPredicate<R>>::Response>,
 {
     type Output = Result<S::Response, S::Error>;
 

@@ -67,13 +67,13 @@ where
 #[macro_export]
 macro_rules! http_err {
     ($msg:literal $(,)?) => {
-        http_err!(spa_rs::http::StatusCode::INTERNAL_SERVER_ERROR, $msg)
+        $crate::http_err!(axum::http::StatusCode::INTERNAL_SERVER_ERROR, $msg)
     };
     ($status:path, $msg:literal $(,)?) => {
-        http_err!($status, "{}", format_args!($msg))
+        $crate::http_err!($status, "{}", format_args!($msg))
     };
     ($status:path, $err:expr $(,)?) => {
-        http_err!($status, "{:?}", $err)
+        $crate::http_err!($status, "{:?}", $err)
     };
     ($status:path, $fmt:expr, $($args:tt)*) => {
         $crate::HttpError {
@@ -82,10 +82,10 @@ macro_rules! http_err {
         }
     };
     ($err:expr $(,)?) => {
-        http_err!(spa_rs::http::StatusCode::INTERNAL_SERVER_ERROR, "{:?}", $err)
+        $crate::http_err!(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "{:?}", $err)
     };
     ($fmt:expr, $($args:tt)*) => {
-        http_err!(spa_rs::http::StatusCode::INTERNAL_SERVER_ERROR, $fmt, $($args)*)
+        $crate::http_err!(axum::http::StatusCode::INTERNAL_SERVER_ERROR, $fmt, $($args)*)
     };
 }
 

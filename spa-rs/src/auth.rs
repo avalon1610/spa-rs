@@ -56,6 +56,7 @@ where
         Self(p, "Need basic authenticate".to_string())
     }
 
+    #[must_use]
     pub fn err_msg(mut self, msg: impl Into<String>) -> Self {
         self.1 = msg.into();
         self
@@ -66,9 +67,8 @@ impl<T> AsyncPredicate<Request> for AsyncBasicAuth<T>
 where
     T: AuthCheckPredicate + Clone + Send + Sync + 'static,
 {
-    type Request = Request;
     type Response = Response;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Request, Self::Response>> + Send>>;
+    type Future = Pin<Box<dyn Future<Output = Result<Request, Self::Response>> + Send>>;
 
     fn check(&self, mut request: Request) -> Self::Future {
         let mut err = self.1.clone();
@@ -79,7 +79,7 @@ where
                     .check(authorization.username(), authorization.password())
                     .await
                 {
-                    Err(e) => err = format!("check authorization error: {:?}", e),
+                    Err(e) => err = format!("check authorization error: {e:?}"),
                     Ok(ci) => {
                         request.extensions_mut().insert(ci);
                         return Ok(request);
@@ -122,11 +122,13 @@ where
         }
     }
 
+    #[must_use]
     pub fn srv_name(mut self, name: impl Into<String>) -> Self {
         self.srv_name = name.into();
         self
     }
 
+    #[must_use]
     pub fn err_msg(mut self, msg: impl Into<String>) -> Self {
         self.err = msg.into();
         self
@@ -137,9 +139,8 @@ impl<T> AsyncPredicate<Request> for AsyncDigestAuth<T>
 where
     T: AuthCheckPredicate + Clone + Send + Sync + 'static,
 {
-    type Request = Request;
     type Response = Response;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Request, Self::Response>> + Send>>;
+    type Future = Pin<Box<dyn Future<Output = Result<Request, Self::Response>> + Send>>;
 
     fn check(&self, request: Request) -> Self::Future {
         let err = self.err.clone();
@@ -155,14 +156,14 @@ where
                 return auth.check(
                     inner.username(),
                     inner.password(),
-                    nonces,
+                    &nonces,
                     request,
                     srv_name,
                 );
             }
 
             drain_body(request).await;
-            Err(unauthorized(nonces, err, srv_name))
+            Err(unauthorized(&nonces, err, srv_name))
         })
     }
 }
@@ -170,7 +171,7 @@ where
 fn bad_request(e: impl Display) -> Response {
     (
         StatusCode::BAD_REQUEST,
-        format!("Bad request in header Authorization: {}", e),
+        format!("Bad request in header Authorization: {e}"),
     )
         .into_response()
 }
@@ -204,7 +205,7 @@ mod digest {
             &self,
             username: impl AsRef<str>,
             password: impl AsRef<str>,
-            nonces: Arc<Mutex<VecDeque<(String, String)>>>,
+            nonces: &Arc<Mutex<VecDeque<(String, String)>>>,
             request: Request,
             srv_name: impl AsRef<str>,
         ) -> Result<Request, Response> {
@@ -228,7 +229,7 @@ mod digest {
                 return Err(unauthorized(nonces, "invalid nonce or opaque", srv_name));
             }
 
-            log::debug!("digest request: {:?}", request);
+            log::debug!("digest request: {request:?}");
             let ha1 = md5::compute(format!(
                 "{}:{}:{}",
                 username.as_ref(),
@@ -241,7 +242,7 @@ mod digest {
                 ha1, self.nonce, self.nc, self.cnonce, self.qop, ha2
             ));
 
-            if format!("{:x}", password) != self.response {
+            if format!("{password:x}") != self.response {
                 return Err(unauthorized(
                     nonces,
                     "invalid username or password",
@@ -279,19 +280,19 @@ mod digest {
                     "response" => result.response = v.to_string(),
                     "opaque" => result.opaque = v.to_string(),
                     _ => {
-                        log::warn!("unknown authorization part: {}", c);
+                        log::warn!("unknown authorization part: {c}");
                         continue;
                     }
                 }
             }
 
-            log::debug!("digest auth: {:?}", result);
+            log::debug!("digest auth: {result:?}");
             Ok(result)
         }
     }
 
     pub(super) fn unauthorized(
-        nonces: Arc<Mutex<VecDeque<(String, String)>>>,
+        nonces: &Arc<Mutex<VecDeque<(String, String)>>>,
         msg: impl Into<String>,
         srv_name: impl AsRef<str>,
     ) -> Response {
@@ -299,10 +300,8 @@ mod digest {
         let nonce = rand_string(32);
         let opaque = rand_string(32);
 
-        let www_authenticate = format!(
-            r#"Digest realm="{}",qop="auth",nonce="{}",opaque="{}""#,
-            realm, nonce, opaque
-        );
+        let www_authenticate =
+            format!(r#"Digest realm="{realm}",qop="auth",nonce="{nonce}",opaque="{opaque}""#,);
 
         {
             let mut nonce_list = nonces.lock();

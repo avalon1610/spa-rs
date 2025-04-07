@@ -1,14 +1,14 @@
 //! spa-rs is a library who can embed all SPA web application files (dist static file),
 //! and release as a single binary executable.
 //!
-//! It based-on [axum] and [rust_embed]
+//! It based-on [`axum`] and [`rust_embed`]
 //!
 //! It reexported all axum module for convenient use.
 //! # Example
 //! ```no_run
 //! use spa_rs::spa_server_root;
 //! use spa_rs::SpaServer;
-//! use spa_rs::routing::{get, Router};
+//! use spa_rs::axum::routing::{get, Router};
 //! use anyhow::Result;
 //!
 //! spa_server_root!("web/dist");           // specific your SPA dist file location
@@ -45,24 +45,28 @@
 //!   srv.reverse_proxy(forward_addr.parse()?);
 //! ```
 use anyhow::{anyhow, Context, Result};
+#[cfg(feature = "reverse-proxy")]
+use axum::http::{Method, Uri};
 use axum::{
     body::{Bytes, HttpBody},
     extract::Request,
     http::HeaderValue,
     response::Response,
     routing::{get_service, Route},
+    Extension,
+};
+use axum::{
+    http::{
+        header::{self},
+        StatusCode,
+    },
+    Router,
 };
 #[cfg(feature = "openssl")]
 use axum_server::tls_openssl::OpenSSLConfig;
 #[cfg(feature = "rustls")]
 use axum_server::tls_rustls::RustlsConfig;
 use futures_util::future::BoxFuture;
-use http::{
-    header::{self},
-    StatusCode,
-};
-#[cfg(feature = "reverse-proxy")]
-use http::{Method, Uri};
 use log::{debug, error, warn};
 pub use rust_embed;
 use std::{
@@ -80,11 +84,12 @@ use tower_http::{
     set_header::SetResponseHeaderLayer,
 };
 
-pub use axum::*;
+pub use axum;
 pub mod auth;
 pub mod session;
 pub use axum::debug_handler;
-pub use axum_help::*;
+pub use axum_extra as extra;
+pub use axum_help as help;
 
 /// A server wrapped axum server.
 ///
@@ -112,33 +117,30 @@ where
 #[axum::debug_handler]
 #[cfg(feature = "reverse-proxy")]
 async fn forwarded_to_dev(
-    Extension(forward_addr): Extension<String>,
-    uri: Uri,
+    axum::Extension(forward_addr): axum::Extension<String>,
+    uri: axum::http::uri::Uri,
     method: Method,
-) -> HttpResult<Response> {
-    use axum::http::Response;
-    use http::uri::Scheme;
-
+) -> help::HttpResult<axum::response::Response> {
     if method == Method::GET {
         let client = reqwest::Client::builder().no_proxy().build()?;
         let mut parts = uri.into_parts();
         parts.authority = Some(forward_addr.parse()?);
         if parts.scheme.is_none() {
-            parts.scheme = Some(Scheme::HTTP);
+            parts.scheme = Some(axum::http::uri::Scheme::HTTP);
         }
-        let url = Uri::from_parts(parts)?.to_string();
+        let uri = Uri::from_parts(parts)?.to_string();
 
-        println!("forward url: {}", url);
-        let response = client.get(url).send().await?;
-        let response: http::Response<_> = response.into();
+        println!("forward url: {uri}");
+        let response = client.get(uri).send().await?;
+        let response: axum::http::Response<_> = response.into();
         let (parts, body) = response.into_parts();
-        let body = body.as_bytes().map(|b| b.to_vec()).unwrap_or_default();
+        let body = body.as_bytes().map(<[u8]>::to_vec).unwrap_or_default();
 
         let response = Response::from_parts(parts, body.into());
         return Ok(response);
     }
 
-    Err(HttpError {
+    Err(axum_help::HttpError {
         message: "Method not allowed".to_string(),
         status_code: StatusCode::METHOD_NOT_ALLOWED,
     })
@@ -153,7 +155,7 @@ impl<T> SpaServer<T>
 where
     T: Clone + Send + Sync + 'static,
 {
-    /// Just new(), nothing special
+    /// Just `new()`, nothing special
     pub fn new() -> Result<Self> {
         Ok(Self {
             static_path: Vec::new(),
@@ -173,6 +175,7 @@ where
     /// Specific server context data
     ///
     /// This is similar to [axum middleware](https://docs.rs/axum/latest/axum/#middleware)
+    #[must_use]
     pub fn data(mut self, data: T) -> Self
     where
         T: Clone + Send + Sync + 'static,
@@ -184,16 +187,18 @@ where
     /// Specific an axum layer to server
     ///
     /// This is similar to [axum middleware](https://docs.rs/axum/latest/axum/#middleware)
+    #[must_use]
     pub fn layer<L, NewResBody>(mut self, layer: L) -> Self
     where
-        L: Layer<Route> + Clone + Send + 'static,
+        L: Layer<Route> + Clone + Send + Sync + 'static,
         L::Service: Service<Request, Response = Response<NewResBody>, Error = Infallible>
             + Clone
             + Send
+            + Sync
             + 'static,
         <L::Service as Service<Request>>::Future: Send + 'static,
         NewResBody: HttpBody<Data = Bytes> + Send + 'static,
-        NewResBody::Error: Into<BoxError>,
+        NewResBody::Error: Into<axum::BoxError>,
     {
         self.extra_layer.push(Box::new(move |app| app.layer(layer)));
         self
@@ -204,6 +209,7 @@ where
     /// it's useful when debugging UI
     #[cfg(feature = "reverse-proxy")]
     #[cfg_attr(docsrs, doc(cfg(feature = "reverse-proxy")))]
+    #[must_use]
     pub fn reverse_proxy(mut self, addr: impl Into<String>) -> Self {
         self.forward = Some(addr.into());
         self
@@ -211,7 +217,8 @@ where
 
     /// static file release path in runtime
     ///
-    /// Default path is /tmp/[env!(CARGO_PKG_NAME)]_static_files
+    /// Default path is `/tmp/[env!(CARGO_PKG_NAME)]_static_files`
+    #[must_use]
     pub fn release_path(mut self, rp: impl Into<PathBuf>) -> Self {
         self.release_path = rp.into();
         self
@@ -291,7 +298,7 @@ where
                             ),
                         )
                     }),
-            )
+            );
         }
 
         self.router = self
@@ -303,7 +310,7 @@ where
         }
 
         for layer in self.extra_layer {
-            self.router = layer(self.router)
+            self.router = layer(self.router);
         }
 
         let addr = format!("0.0.0.0:{}", self.port).parse()?;
@@ -355,6 +362,7 @@ where
 
     /// Setting up server router, see example for usage.
     ///
+    #[must_use]
     pub fn route(mut self, path: impl AsRef<str>, router: Router) -> Self {
         self.router = self.router.nest(path.as_ref(), router);
         self
@@ -362,6 +370,7 @@ where
 
     /// Server listening port, default is 8080
     ///
+    #[must_use]
     pub fn port(mut self, port: u16) -> Self {
         self.port = port;
         self
@@ -369,7 +378,8 @@ where
 
     /// Setting up a runtime static file path.
     ///
-    /// Unlike [spa_server_root], file in this path can be changed in runtime.
+    /// Unlike [`spa_server_root`], file in this path can be changed in runtime.
+    #[must_use]
     pub fn static_path(mut self, path: impl Into<String>, dir: impl Into<PathBuf>) -> Self {
         self.static_path.push((path.into(), dir.into()));
         self
@@ -377,6 +387,7 @@ where
 
     /// add host based router
     ///
+    #[must_use]
     pub fn host_router(mut self, host: impl Into<String>, router: Router) -> Self {
         self.host_routers.insert(host.into(), router);
         self
@@ -462,8 +473,10 @@ pub struct HttpsConfig {
 /// setup https pems   
 ///
 /// ## Example
-/// ```
-/// https_pems!("/some/folder/contains/two/pem/file");
+/// ```rust,ignore
+/// # use spa_rs::embed_https_pems;
+///
+/// embed_https_pems!("/some/folder/contains/two/pem/file");
 /// ```
 ///
 /// ## Caution
@@ -542,20 +555,19 @@ pub trait SpaStatic: rust_embed::RustEmbed {
         }
 
         for file in Self::iter() {
-            match Self::get(&file) {
-                Some(f) => {
-                    if let Some(p) = std::path::Path::new(file.as_ref()).parent() {
-                        let parent_dir = target_dir.join(p);
-                        create_dir_all(parent_dir)?;
-                    }
-
-                    let path = target_dir.join(file.as_ref());
-                    debug!("release static file: {}", path.display());
-                    if let Err(e) = fs::write(path, f.data) {
-                        error!("static file {} write error: {:?}", file, e);
-                    }
+            if let Some(f) = Self::get(&file) {
+                if let Some(p) = std::path::Path::new(file.as_ref()).parent() {
+                    let parent_dir = target_dir.join(p);
+                    create_dir_all(parent_dir)?;
                 }
-                None => warn!("static file {} not found", file),
+
+                let path = target_dir.join(file.as_ref());
+                debug!("release static file: {}", path.display());
+                if let Err(e) = fs::write(path, f.data) {
+                    error!("static file {file} write error: {e:?}");
+                }
+            } else {
+                warn!("static file {file} not found");
             }
         }
 

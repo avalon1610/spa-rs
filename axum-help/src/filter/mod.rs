@@ -5,16 +5,17 @@
 //! tower, this let you return a custom [`response`](http::response::Response) to user when the request is rejected.
 //!
 //! # Example
-//!```
+//!```rust,no_run
 //! # use axum::routing::{get, Router};
 //! # use axum::response::IntoResponse;
 //! # use axum::body::Body;
-//! # use axum::headers::{authorization::Basic, Authorization, HeaderMapExt};
+//! # use axum_extra::headers::{authorization::Basic, Authorization, HeaderMapExt};
 //! # use axum_help::filter::FilterExLayer;
 //! # use http::{Request, StatusCode};
 //! #
-//! # fn main() {
-//!     Router::new()
+//! # #[tokio::main]
+//! # async fn main() {
+//!     let app = Router::new()
 //!         .route("/get", get(|| async { "get works" }))
 //!         .layer(FilterExLayer::new(|request: Request<Body>| {
 //!             if let Some(_auth) = request.headers().typed_get::<Authorization<Basic>>() {
@@ -24,12 +25,15 @@
 //!                Err(StatusCode::UNAUTHORIZED.into_response())
 //!            }
 //!         }));
+//!     # let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+//!     # axum::serve(listener, app).await.unwrap();
 //! # }
 //!```
 //!
-use axum::{extract::Request, response::Response};
+use axum::{body::HttpBody, extract::Request, response::Response};
 use future::{AsyncResponseFuture, ResponseFuture};
 use futures_util::StreamExt;
+use http_body_util::BodyExt;
 pub use layer::{AsyncFilterExLayer, FilterExLayer};
 pub use predicate::{AsyncPredicate, Predicate};
 use std::{
@@ -128,16 +132,18 @@ where
 #[derive(Debug)]
 pub struct AsyncFilterEx<T, U, R>
 where
-    U: AsyncPredicate<R>,
+    U: AsyncPredicate<R> + Sync,
+    T: Sync,
 {
     inner: T,
     predicate: U,
-    _r: PhantomData<R>,
+    _r: PhantomData<fn(R)>,
 }
 
-impl<T: Clone, U: Clone, R> Clone for AsyncFilterEx<T, U, R>
+impl<T, U, R> Clone for AsyncFilterEx<T, U, R>
 where
-    U: AsyncPredicate<R>,
+    U: AsyncPredicate<R> + Clone + Sync,
+    T: Clone + Sync,
 {
     fn clone(&self) -> Self {
         Self {
@@ -150,7 +156,8 @@ where
 
 impl<T, U, R> AsyncFilterEx<T, U, R>
 where
-    U: AsyncPredicate<R>,
+    U: AsyncPredicate<R> + Clone + Sync,
+    T: Sync,
 {
     /// Returns a new [AsyncFilterEx] service wrapping `inner`.
     pub fn new(inner: T, predicate: U) -> Self {
@@ -169,7 +176,7 @@ where
     }
 
     /// Check a `Request` value against thie filter's predicate
-    pub async fn check(&mut self, request: R) -> Result<U::Request, U::Response>
+    pub async fn check(&mut self, request: R) -> Result<R, U::Response>
     where
         U: AsyncPredicate<R>,
     {
@@ -194,8 +201,8 @@ where
 
 impl<T, U> Service<Request> for AsyncFilterEx<T, U, Request>
 where
-    T: Service<U::Request, Response = Response> + Clone,
-    U: AsyncPredicate<Request, Response = Response>,
+    T: Service<Request, Response = Response> + Clone + Sync,
+    U: AsyncPredicate<Request, Response = Response> + Sync,
 {
     type Response = T::Response;
     type Error = T::Error;
@@ -206,14 +213,12 @@ where
     }
 
     fn call(&mut self, req: Request) -> Self::Future {
-        use std::mem;
-
         let inner = self.inner.clone();
         // In case the inner service has state that's driven to readiness and
         // not tracked by clones (such as `Buffer`), pass the version we have
         // already called `poll_ready` on into the future, and leave its clone
         // behind.
-        let inner = mem::replace(&mut self.inner, inner);
+        let inner = std::mem::replace(&mut self.inner, inner);
 
         // Check the request
         let check = self.predicate.check(req);
@@ -222,7 +227,7 @@ where
     }
 }
 
-pub async fn drain_body(request: Request) {
+pub async fn drain_body<B: HttpBody + Unpin>(request: Request<B>) {
     let mut data_stream = request.into_body().into_data_stream();
-    while let Some(_) = data_stream.next().await {}
+    while data_stream.next().await.is_some() {}
 }

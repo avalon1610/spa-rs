@@ -3,16 +3,24 @@ edition = "2021"
 name = "axum-help"
 homepage = "https://github.com/avalon1610/spa-rs"
 repository = "https://github.com/avalon1610/spa-rs"
-version = "0.1.5"
+version = "0.2.0"
 description = "Series enhancements for axum"
 license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-axum = { version = "0.7.2" }
+axum = { version = "0.8" }
 http = "1.0.0"
 pin-project-lite = "0.2.9"
 tower = "0.5.2"
 futures-core = "0.3"
 futures-util = "0.3.29"
+http-body-util = "0.1.3"
+
+[dev-dependencies]
+axum-extra = { version = "0.10.1", features = ["typed-header"] }
+tokio = { version = "1.44.2", features = ["full"] }
+
+[package.metadata.cargo-machete]
+ignored = ["axum-extra", "tokio"]

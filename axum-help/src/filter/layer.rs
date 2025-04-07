@@ -38,15 +38,15 @@ impl<U: Clone, S> Layer<S> for FilterExLayer<U> {
 #[derive(Debug)]
 pub struct AsyncFilterExLayer<U, R>
 where
-    U: AsyncPredicate<R>,
+    U: AsyncPredicate<R> + Sync,
 {
     predicate: U,
-    _r: PhantomData<R>,
+    _r: PhantomData<fn(R)>,
 }
 
-impl<U: Clone, R> Clone for AsyncFilterExLayer<U, R>
+impl<U, R> Clone for AsyncFilterExLayer<U, R>
 where
-    U: AsyncPredicate<R>,
+    U: AsyncPredicate<R> + Clone + Sync,
 {
     fn clone(&self) -> Self {
         Self {
@@ -58,7 +58,7 @@ where
 
 impl<U, R> AsyncFilterExLayer<U, R>
 where
-    U: AsyncPredicate<R>,
+    U: AsyncPredicate<R> + Sync,
 {
     pub fn new(predicate: U) -> Self {
         Self {
@@ -68,9 +68,10 @@ where
     }
 }
 
-impl<U: Clone, S, R> Layer<S> for AsyncFilterExLayer<U, R>
+impl<U, S, R> Layer<S> for AsyncFilterExLayer<U, R>
 where
-    U: AsyncPredicate<R>,
+    U: AsyncPredicate<R> + Clone + Sync,
+    S: Sync,
 {
     type Service = AsyncFilterEx<S, U, R>;
 
