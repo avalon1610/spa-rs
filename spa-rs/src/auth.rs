@@ -1,14 +1,17 @@
 use self::digest::unauthorized;
 use anyhow::Result;
 use axum::{
+    body::Body,
     extract::Request,
     http::StatusCode,
     response::{IntoResponse, Response},
 };
 use axum_help::filter::{drain_body, AsyncPredicate};
+use futures_util::FutureExt;
 use headers::{authorization::Basic, Authorization, HeaderMapExt};
 use parking_lot::Mutex;
 use std::{collections::VecDeque, fmt::Display, future::Future, pin::Pin, sync::Arc};
+use tower_http::auth::AsyncAuthorizeRequest;
 
 pub trait AuthCheckPredicate {
     type CheckInfo: Clone + Send + Sync + 'static;
@@ -50,7 +53,7 @@ where
 
 impl<T> AsyncBasicAuth<T>
 where
-    T: AuthCheckPredicate + Clone + Send,
+    T: AuthCheckPredicate + Clone + Send + 'static,
 {
     pub fn new(p: T) -> Self {
         Self(p, "Need basic authenticate".to_string())
@@ -61,19 +64,14 @@ where
         self.1 = msg.into();
         self
     }
-}
 
-impl<T> AsyncPredicate<Request> for AsyncBasicAuth<T>
-where
-    T: AuthCheckPredicate + Clone + Send + Sync + 'static,
-{
-    type Response = Response;
-    type Future = Pin<Box<dyn Future<Output = Result<Request, Self::Response>> + Send>>;
-
-    fn check(&self, mut request: Request) -> Self::Future {
+    fn check_impl(
+        &self,
+        mut request: Request,
+    ) -> Pin<Box<dyn Future<Output = Result<Request, Response>> + Send>> {
         let mut err = self.1.clone();
         let auth = self.0.clone();
-        Box::pin(async move {
+        async move {
             if let Some(authorization) = request.headers().typed_get::<Authorization<Basic>>() {
                 match auth
                     .check(authorization.username(), authorization.password())
@@ -94,7 +92,33 @@ where
                 err,
             )
                 .into_response())
-        })
+        }
+        .boxed()
+    }
+}
+
+impl<T> AsyncAuthorizeRequest<Body> for AsyncBasicAuth<T>
+where
+    T: AuthCheckPredicate + Clone + Send + Sync + 'static,
+{
+    type RequestBody = Body;
+    type ResponseBody = Body;
+    type Future = Pin<Box<dyn Future<Output = Result<Request, Response>> + Send>>;
+
+    fn authorize(&mut self, request: Request) -> Self::Future {
+        self.check_impl(request)
+    }
+}
+
+impl<T> AsyncPredicate<Request> for AsyncBasicAuth<T>
+where
+    T: AuthCheckPredicate + Clone + Send + Sync + 'static,
+{
+    type Response = Response;
+    type Future = Pin<Box<dyn Future<Output = Result<Request, Self::Response>> + Send>>;
+
+    fn check(&self, request: Request) -> Self::Future {
+        self.check_impl(request)
     }
 }
 
@@ -111,7 +135,7 @@ where
 
 impl<T> AsyncDigestAuth<T>
 where
-    T: AuthCheckPredicate + Clone + Send,
+    T: AuthCheckPredicate + Clone + Send + 'static,
 {
     pub fn new(p: T) -> Self {
         Self {
@@ -133,21 +157,16 @@ where
         self.err = msg.into();
         self
     }
-}
 
-impl<T> AsyncPredicate<Request> for AsyncDigestAuth<T>
-where
-    T: AuthCheckPredicate + Clone + Send + Sync + 'static,
-{
-    type Response = Response;
-    type Future = Pin<Box<dyn Future<Output = Result<Request, Self::Response>> + Send>>;
-
-    fn check(&self, request: Request) -> Self::Future {
+    fn check_impl(
+        &self,
+        request: Request,
+    ) -> Pin<Box<dyn Future<Output = Result<Request, Response>> + Send>> {
         let err = self.err.clone();
         let inner = self.inner.clone();
         let srv_name = self.srv_name.clone();
         let nonces = self.nonces.clone();
-        Box::pin(async move {
+        async move {
             if let Some(auth_header) = request.headers().get("Authorization") {
                 let auth =
                     digest::Authorization::from_header(auth_header.to_str().map_err(bad_request)?)
@@ -164,7 +183,33 @@ where
 
             drain_body(request).await;
             Err(unauthorized(&nonces, err, srv_name))
-        })
+        }
+        .boxed()
+    }
+}
+
+impl<T> AsyncAuthorizeRequest<Body> for AsyncDigestAuth<T>
+where
+    T: AuthCheckPredicate + Clone + Send + Sync + 'static,
+{
+    type RequestBody = Body;
+    type ResponseBody = Body;
+    type Future = Pin<Box<dyn Future<Output = Result<Request, Response>> + Send>>;
+
+    fn authorize(&mut self, request: axum::http::Request<Body>) -> Self::Future {
+        self.check_impl(request)
+    }
+}
+
+impl<T> AsyncPredicate<Request> for AsyncDigestAuth<T>
+where
+    T: AuthCheckPredicate + Clone + Send + Sync + 'static,
+{
+    type Response = Response;
+    type Future = Pin<Box<dyn Future<Output = Result<Request, Self::Response>> + Send>>;
+
+    fn check(&self, request: Request) -> Self::Future {
+        self.check_impl(request)
     }
 }
 
@@ -201,6 +246,7 @@ mod digest {
     }
 
     impl Authorization {
+        #[allow(clippy::result_large_err)]
         pub(super) fn check(
             &self,
             username: impl AsRef<str>,
@@ -281,7 +327,6 @@ mod digest {
                     "opaque" => result.opaque = v.to_string(),
                     _ => {
                         log::warn!("unknown authorization part: {c}");
-                        continue;
                     }
                 }
             }
