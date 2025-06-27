@@ -4,6 +4,7 @@ use axum::{http::StatusCode, response::IntoResponse, response::Response};
 use std::fmt::{Debug, Display};
 
 pub mod filter;
+pub use axum;
 
 /// The error type contains a [status code](StatusCode) and a string message.
 ///
@@ -67,7 +68,7 @@ where
 #[macro_export]
 macro_rules! http_err {
     ($msg:literal $(,)?) => {
-        $crate::http_err!(axum::http::StatusCode::INTERNAL_SERVER_ERROR, $msg)
+        $crate::http_err!($crate::axum::http::StatusCode::INTERNAL_SERVER_ERROR, $msg)
     };
     ($status:path, $msg:literal $(,)?) => {
         $crate::http_err!($status, "{}", format_args!($msg))
@@ -82,10 +83,10 @@ macro_rules! http_err {
         }
     };
     ($err:expr $(,)?) => {
-        $crate::http_err!(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "{:?}", $err)
+        $crate::http_err!($crate::axum::http::StatusCode::INTERNAL_SERVER_ERROR, "{:?}", $err)
     };
     ($fmt:expr, $($args:tt)*) => {
-        $crate::http_err!(axum::http::StatusCode::INTERNAL_SERVER_ERROR, $fmt, $($args)*)
+        $crate::http_err!($crate::axum::http::StatusCode::INTERNAL_SERVER_ERROR, $fmt, $($args)*)
     };
 }
 

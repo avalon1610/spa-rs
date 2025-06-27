@@ -3,7 +3,7 @@ edition = "2021"
 name = "axum-help"
 homepage = "https://github.com/avalon1610/spa-rs"
 repository = "https://github.com/avalon1610/spa-rs"
-version = "0.2.0"
+version = "0.2.1"
 description = "Series enhancements for axum"
 license = "MIT"
 
