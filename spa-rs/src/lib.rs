@@ -52,7 +52,7 @@ use axum::{
     extract::Request,
     http::HeaderValue,
     response::Response,
-    routing::{get_service, Route},
+    routing::{get_service, MethodRouter, Route},
     Extension,
 };
 use axum::{
@@ -365,6 +365,14 @@ where
     #[must_use]
     pub fn route(mut self, path: impl AsRef<str>, router: Router) -> Self {
         self.router = self.router.nest(path.as_ref(), router);
+        self
+    }
+
+    /// return the server router for modifying
+    ///
+    pub fn route_method(mut self, path: impl AsRef<str>, method: MethodRouter) -> Self {
+        let path = path.as_ref();
+        self.router = self.router.route(path, method);
         self
     }
 
