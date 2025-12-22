@@ -6,9 +6,9 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use axum_help::filter::{drain_body, AsyncPredicate};
+use axum_help::filter::{AsyncPredicate, drain_body};
 use futures_util::FutureExt;
-use headers::{authorization::Basic, Authorization, HeaderMapExt};
+use headers::{Authorization, HeaderMapExt, authorization::Basic};
 use parking_lot::Mutex;
 use std::{collections::VecDeque, fmt::Display, future::Future, pin::Pin, sync::Arc};
 use tower_http::auth::AsyncAuthorizeRequest;
@@ -222,14 +222,14 @@ fn bad_request(e: impl Display) -> Response {
 }
 
 mod digest {
-    use anyhow::{anyhow, bail, Result};
+    use anyhow::{Result, anyhow, bail};
     use axum::{
         extract::Request,
         http::StatusCode,
         response::{IntoResponse, Response},
     };
     use parking_lot::Mutex;
-    use rand::{distributions::Alphanumeric, thread_rng, Rng};
+    use rand::{Rng, distributions::Alphanumeric, thread_rng};
     use std::{collections::VecDeque, fmt::Debug, sync::Arc};
 
     #[derive(Default, Debug)]
@@ -313,7 +313,7 @@ mod digest {
                 let c = c.trim();
                 let (k, v) = c
                     .split_once('=')
-                    .ok_or_else(|| anyhow!("invalid part of authorization: {}", c))?;
+                    .ok_or_else(|| anyhow!("invalid part of authorization: {c}"))?;
                 let v = v.trim_matches('"');
                 match k {
                     "username" => result.username = v.to_string(),

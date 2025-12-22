@@ -153,14 +153,14 @@ where
         if let Some(cookie) = request.headers().typed_get::<Cookie>() {
             let sessions = self.0.inner.read();
             for (k, v) in cookie.iter() {
-                if k == self.0.key {
-                    if let Some(u) = sessions.get(v) {
-                        request.extensions_mut().insert(Session {
-                            current: u.clone(),
-                            all: self.0.clone(),
-                        });
-                        return Ok(request);
-                    }
+                if k == self.0.key
+                    && let Some(u) = sessions.get(v)
+                {
+                    request.extensions_mut().insert(Session {
+                        current: u.clone(),
+                        all: self.0.clone(),
+                    });
+                    return Ok(request);
                 }
             }
         }

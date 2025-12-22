@@ -44,23 +44,23 @@
 //!   let forward_addr = "http://localhost:1234";
 //!   srv.reverse_proxy(forward_addr.parse()?);
 //! ```
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 #[cfg(feature = "reverse-proxy")]
 use axum::http::{Method, Uri};
 use axum::{
+    Extension,
     body::{Bytes, HttpBody},
     extract::Request,
     http::HeaderValue,
     response::Response,
-    routing::{get_service, MethodRouter, Route},
-    Extension,
+    routing::{MethodRouter, Route, get_service},
 };
 use axum::{
-    http::{
-        header::{self},
-        StatusCode,
-    },
     Router,
+    http::{
+        StatusCode,
+        header::{self},
+    },
 };
 #[cfg(feature = "openssl")]
 use axum_server::tls_openssl::OpenSSLConfig;
@@ -78,7 +78,7 @@ use std::{
     path::PathBuf,
     sync::Arc,
 };
-use tower::{util::ServiceExt as TowerServiceExt, Layer, Service};
+use tower::{Layer, Service, util::ServiceExt as TowerServiceExt};
 use tower_http::{
     services::{ServeDir, ServeFile},
     set_header::SetResponseHeaderLayer,
@@ -99,7 +99,7 @@ pub use axum_help as help;
 /// - fallback to SPA static file when route matching failed
 ///     - if still get 404, it will redirect to SPA index.html
 ///
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct SpaServer<T = ()>
 where
     T: Clone + Send + Sync + 'static,
@@ -110,7 +110,7 @@ where
     data: Option<T>,
     forward: Option<String>,
     release_path: PathBuf,
-    extra_layer: Vec<Box<dyn FnOnce(Router) -> Router>>,
+    extra_layer: Vec<Arc<dyn Fn(Router) -> Router + Send + Sync>>,
     host_routers: HashMap<String, Router>,
 }
 
@@ -200,7 +200,8 @@ where
         NewResBody: HttpBody<Data = Bytes> + Send + 'static,
         NewResBody::Error: Into<axum::BoxError>,
     {
-        self.extra_layer.push(Box::new(move |app| app.layer(layer)));
+        self.extra_layer
+            .push(Arc::new(move |app| app.layer(layer.clone())));
         self
     }
 
@@ -325,7 +326,7 @@ where
                 {
                     rustls::crypto::aws_lc_rs::default_provider()
                         .install_default()
-                        .map_err(|e| anyhow!("install default crypto provider error: {:?}", e))?;
+                        .map_err(|e| anyhow!("install default crypto provider error: {e:?}"))?;
                     let certificate = std::fs::read(config.certificate)?;
                     let private_key = std::fs::read(config.private_key)?;
                     axum_server::bind_rustls(
@@ -370,6 +371,7 @@ where
 
     /// return the server router for modifying
     ///
+    #[must_use]
     pub fn route_method(mut self, path: impl AsRef<str>, method: MethodRouter) -> Self {
         let path = path.as_ref();
         self.router = self.router.route(path, method);
