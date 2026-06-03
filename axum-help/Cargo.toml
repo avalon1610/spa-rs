@@ -1,6 +1,6 @@
 [package]
 name = "axum-help"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 description = "Series enhancements for axum"
 homepage = "https://github.com/avalon1610/spa-rs"

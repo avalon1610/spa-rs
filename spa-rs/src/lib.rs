@@ -15,16 +15,14 @@
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<()> {
-//!     let data = String::new();           // server context can be acccess by [axum::Extension]
-//!     let mut srv = SpaServer::new()?
+//!     let srv = SpaServer::new()
 //!         .port(3000)
-//!         .data(data)
 //!         .static_path("/png", "web")     // static file generated in runtime
 //!         .route("/api", Router::new()
 //!             .route("/get", get(|| async { "get works" })
 //!         )
 //!     );
-//!     srv.run(spa_server_root!()).await?;  
+//!     srv.run(spa_server_root!()).await?;
 //!
 //!     Ok(())
 //! }
@@ -70,9 +68,10 @@ use futures_util::future::BoxFuture;
 use log::{debug, error, warn};
 pub use rust_embed;
 use std::{
+    any::type_name,
     collections::HashMap,
     convert::Infallible,
-    env::current_exe,
+    env::{home_dir, temp_dir},
     fs::{self, create_dir_all},
     net::SocketAddr,
     path::PathBuf,
@@ -106,12 +105,13 @@ where
 {
     static_path: Vec<(String, PathBuf)>,
     port: u16,
-    router: Router,
+    router: Router<T>,
     data: Option<T>,
+    state: Option<T>,
     forward: Option<String>,
     release_path: PathBuf,
-    extra_layer: Vec<Arc<dyn Fn(Router) -> Router + Send + Sync>>,
-    host_routers: HashMap<String, Router>,
+    extra_layer: Vec<Arc<dyn Fn(Router<()>) -> Router<()> + Send + Sync>>,
+    host_routers: HashMap<String, Router<T>>,
 }
 
 #[axum::debug_handler]
@@ -156,31 +156,43 @@ where
     T: Clone + Send + Sync + 'static,
 {
     /// Just `new()`, nothing special
-    pub fn new() -> Result<Self> {
-        Ok(Self {
+    pub fn new() -> Self {
+        Self {
             static_path: Vec::new(),
             port: 8080,
             forward: None,
-            release_path: current_exe()?
-                .parent()
-                .ok_or_else(|| anyhow!("no parent in current_exe"))?
+            release_path: home_dir()
+                .unwrap_or_else(|| temp_dir())
                 .join(format!(".{}_static_files", env!("CARGO_PKG_NAME"))),
             extra_layer: Vec::new(),
             host_routers: HashMap::new(),
             router: Router::new(),
             data: None,
-        })
+            state: None,
+        }
     }
 
     /// Specific server context data
     ///
     /// This is similar to [axum middleware](https://docs.rs/axum/latest/axum/#middleware)
+    #[deprecated(note = "use state() instead, data() will be removed in future version")]
     #[must_use]
     pub fn data(mut self, data: T) -> Self
     where
         T: Clone + Send + Sync + 'static,
     {
         self.data = Some(data);
+        self
+    }
+
+    /// Sepcific server state, which can be modified in runtime.
+    ///
+    #[must_use]
+    pub fn state(mut self, st: T) -> Self
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        self.state = Some(st);
         self
     }
 
@@ -225,47 +237,52 @@ where
         self
     }
 
-    /// Run the spa server forever
-    pub async fn run<Root>(self, root: Root) -> Result<()>
+    /// Run the spa server forever with a custom state.
+    ///
+    /// `.state(t)` must have been called before `run_with_state()`.
+    /// If you don't need custom state, use `SpaServer::new()` (which is `SpaServer<()>`)
+    /// and call `.run()` instead.
+    pub async fn run_with_state<Root>(self, root: Root) -> Result<()>
     where
         Root: SpaStatic,
     {
         self.run_raw(Some(root), None).await
     }
 
-    /// Run the spa server with tls
+    /// Run the spa server with tls and a custom state
     #[cfg(any(feature = "openssl", feature = "rustls"))]
-    pub async fn run_tls<Root>(self, root: Root, config: HttpsConfig) -> Result<()>
+    pub async fn run_tls_with_state<Root>(self, root: Root, config: HttpsConfig) -> Result<()>
     where
         Root: SpaStatic,
     {
         self.run_raw(Some(root), Some(config)).await
     }
 
-    /// Run the spa server without spa root
-    pub async fn run_api(self) -> Result<()> {
+    /// Run the spa server without spa root, with a custom state
+    pub async fn run_api_with_state(self) -> Result<()> {
         self.run_raw::<ApiOnly>(None, None).await
     }
 
-    /// Run the spa server with tls and without spa root
+    /// Run the spa server with tls and without spa root, with a custom state
     #[cfg(any(feature = "openssl", feature = "rustls"))]
-    pub async fn run_api_tls(self, config: HttpsConfig) -> Result<()> {
+    pub async fn run_api_tls_with_state(self, config: HttpsConfig) -> Result<()> {
         self.run_raw::<ApiOnly>(None, Some(config)).await
     }
 
-    /// Run the spa server with or without spa root, and with or without tls
-    async fn run_raw<Root>(mut self, root: Option<Root>, config: Option<HttpsConfig>) -> Result<()>
+    /// Build up the router with fallbacks, static paths, and data extension.
+    /// Returns the configured SpaServer ready for state conversion and serving.
+    fn build_router<Root>(mut self, root: Option<Root>) -> Result<Self>
     where
         Root: SpaStatic,
     {
         if let Some(root) = root {
-            let embeded_dir = root.release(self.release_path)?;
+            let embeded_dir = root.release(self.release_path.clone())?;
             let index_file = embeded_dir.clone().join("index.html");
 
-            self.router = if let Some(addr) = self.forward {
+            self.router = if let Some(ref addr) = self.forward {
                 self.router
                     .fallback(forwarded_to_dev)
-                    .layer(Extension(addr))
+                    .layer(Extension(addr.clone()))
             } else {
                 self.router.fallback_service(
                     get_service(ServeDir::new(&embeded_dir).fallback(ServeFile::new(index_file)))
@@ -284,7 +301,7 @@ where
             };
         }
 
-        for sf in self.static_path {
+        for sf in self.static_path.drain(..) {
             self.router = self.router.nest_service(
                 &sf.0,
                 get_service(ServeDir::new(&sf.1))
@@ -302,19 +319,20 @@ where
             );
         }
 
-        self.router = self
-            .router
-            .layer(MatchHostLayer::new(Arc::new(self.host_routers.clone())));
-
-        if let Some(data) = self.data {
-            self.router = self.router.layer(Extension(data));
+        if let Some(ref data) = self.data {
+            self.router = self.router.layer(Extension(data.clone()));
         }
 
-        for layer in self.extra_layer {
-            self.router = layer(self.router);
-        }
+        Ok(self)
+    }
 
-        let addr = format!("0.0.0.0:{}", self.port).parse()?;
+    /// Serve a Router<()> with optional TLS config
+    async fn serve_router(
+        router: Router<()>,
+        port: u16,
+        config: Option<HttpsConfig>,
+    ) -> Result<()> {
+        let addr = format!("0.0.0.0:{}", port).parse()?;
         #[allow(unused_variables)]
         if let Some(config) = config {
             #[cfg(all(feature = "openssl", feature = "rustls"))]
@@ -326,7 +344,12 @@ where
                 {
                     rustls::crypto::aws_lc_rs::default_provider()
                         .install_default()
-                        .map_err(|e| anyhow!("install default crypto provider error: {e:?}"))?;
+                        .map_err(|e| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                format!("install default crypto provider error: {e:?}"),
+                            )
+                        })?;
                     let certificate = std::fs::read(config.certificate)?;
                     let private_key = std::fs::read(config.private_key)?;
                     axum_server::bind_rustls(
@@ -343,17 +366,11 @@ where
                     )
                 }
             }
-            .serve(
-                self.router
-                    .into_make_service_with_connect_info::<SocketAddr>(),
-            )
+            .serve(router.into_make_service_with_connect_info::<SocketAddr>())
             .await?;
         } else {
             axum_server::bind(addr)
-                .serve(
-                    self.router
-                        .into_make_service_with_connect_info::<SocketAddr>(),
-                )
+                .serve(router.into_make_service_with_connect_info::<SocketAddr>())
                 .await
                 .context("serve server error")?;
         }
@@ -361,10 +378,42 @@ where
         Ok(())
     }
 
+    /// Run the spa server with or without spa root, and with or without tls.
+    /// Requires state to have been provided via `.state()`.
+    async fn run_raw<Root>(self, root: Option<Root>, config: Option<HttpsConfig>) -> Result<()>
+    where
+        Root: SpaStatic,
+    {
+        let this = self.build_router(root)?;
+
+        let state = this.state.ok_or_else(|| {
+            anyhow!(
+                "SpaServer<{}> requires .state() to be called before run_with_state(). \
+                 If you don't need custom state, use SpaServer::new() (which is SpaServer<()>).",
+                type_name::<T>()
+            )
+        })?;
+
+        let host_routers_unit: HashMap<String, Router<()>> = this
+            .host_routers
+            .into_iter()
+            .map(|(k, v)| (k, v.with_state(state.clone())))
+            .collect();
+
+        let mut router: Router<()> = this.router.with_state(state);
+        router = router.layer(MatchHostLayer::new(Arc::new(host_routers_unit)));
+
+        for layer in this.extra_layer {
+            router = layer(router);
+        }
+
+        Self::serve_router(router, this.port, config).await
+    }
+
     /// Setting up server router, see example for usage.
     ///
     #[must_use]
-    pub fn route(mut self, path: impl AsRef<str>, router: Router) -> Self {
+    pub fn route(mut self, path: impl AsRef<str>, router: Router<T>) -> Self {
         self.router = self.router.nest(path.as_ref(), router);
         self
     }
@@ -372,7 +421,7 @@ where
     /// return the server router for modifying
     ///
     #[must_use]
-    pub fn route_method(mut self, path: impl AsRef<str>, method: MethodRouter) -> Self {
+    pub fn route_method(mut self, path: impl AsRef<str>, method: MethodRouter<T>) -> Self {
         let path = path.as_ref();
         self.router = self.router.route(path, method);
         self
@@ -398,7 +447,7 @@ where
     /// add host based router
     ///
     #[must_use]
-    pub fn host_router(mut self, host: impl Into<String>, router: Router) -> Self {
+    pub fn host_router(mut self, host: impl Into<String>, router: Router<T>) -> Self {
         self.host_routers.insert(host.into(), router);
         self
     }
@@ -411,9 +460,71 @@ where
     }
 }
 
+impl SpaServer<()> {
+    /// Run the spa server forever.
+    ///
+    /// No custom state is needed — `Router<()>` is served directly.
+    /// For custom state, use `SpaServer::<YourState>::new()` and `.run_with_state()`.
+    pub async fn run<Root>(self, root: Root) -> Result<()>
+    where
+        Root: SpaStatic,
+    {
+        self.run_raw_stateless(Some(root), None).await
+    }
+
+    /// Run the spa server with tls
+    #[cfg(any(feature = "openssl", feature = "rustls"))]
+    pub async fn run_tls<Root>(self, root: Root, config: HttpsConfig) -> Result<()>
+    where
+        Root: SpaStatic,
+    {
+        self.run_raw_stateless(Some(root), Some(config)).await
+    }
+
+    /// Run the spa server without spa root
+    pub async fn run_api(self) -> Result<()> {
+        self.run_raw_stateless::<ApiOnly>(None, None).await
+    }
+
+    /// Run the spa server with tls and without spa root
+    #[cfg(any(feature = "openssl", feature = "rustls"))]
+    pub async fn run_api_tls(self, config: HttpsConfig) -> Result<()> {
+        self.run_raw_stateless::<ApiOnly>(None, Some(config)).await
+    }
+
+    /// Stateless run: Router<()> can be served directly without .with_state().
+    async fn run_raw_stateless<Root>(
+        self,
+        root: Option<Root>,
+        config: Option<HttpsConfig>,
+    ) -> Result<()>
+    where
+        Root: SpaStatic,
+    {
+        let this = self.build_router(root)?;
+
+        // T = (), so host_routers are HashMap<String, Router<()>>
+        let host_routers_unit: HashMap<String, Router<()>> = this
+            .host_routers
+            .into_iter()
+            .map(|(k, v)| (k, v.with_state(())))
+            .collect();
+
+        // Router<()> .with_state(()) eagerly resolves handler closures
+        let mut router: Router<()> = this.router.with_state(());
+        router = router.layer(MatchHostLayer::new(Arc::new(host_routers_unit)));
+
+        for layer in this.extra_layer {
+            router = layer(router);
+        }
+
+        Self::serve_router(router, this.port, config).await
+    }
+}
+
 #[derive(Clone)]
 struct MatchHostLayer {
-    host_routers: Arc<HashMap<String, Router>>,
+    host_routers: Arc<HashMap<String, Router<()>>>,
 }
 
 impl<S> Layer<S> for MatchHostLayer {
@@ -428,7 +539,7 @@ impl<S> Layer<S> for MatchHostLayer {
 }
 
 impl MatchHostLayer {
-    pub fn new(host_routers: Arc<HashMap<String, Router>>) -> Self {
+    pub fn new(host_routers: Arc<HashMap<String, Router<()>>>) -> Self {
         Self { host_routers }
     }
 }
@@ -436,7 +547,7 @@ impl MatchHostLayer {
 #[derive(Clone)]
 struct MatchHost<S> {
     inner: S,
-    host_routers: Arc<HashMap<String, Router>>,
+    host_routers: Arc<HashMap<String, Router<()>>>,
 }
 
 impl<S> Service<Request> for MatchHost<S>

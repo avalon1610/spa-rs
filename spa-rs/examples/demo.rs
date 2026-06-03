@@ -11,7 +11,7 @@ spa_server_root!("web/dist");
 async fn main() -> Result<()> {
     env_logger::init();
 
-    let srv = SpaServer::<()>::new()?
+    let srv = SpaServer::<()>::new()
         .port(3001)
         .static_path("/png", "web")
         .route(
