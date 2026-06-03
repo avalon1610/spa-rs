@@ -110,9 +110,11 @@ where
     state: Option<T>,
     forward: Option<String>,
     release_path: PathBuf,
-    extra_layer: Vec<Arc<dyn Fn(Router<()>) -> Router<()> + Send + Sync>>,
+    extra_layer: Vec<ExtraLayerFn>,
     host_routers: HashMap<String, Router<T>>,
 }
+
+type ExtraLayerFn = Arc<dyn Fn(Router<()>) -> Router<()> + Send + Sync>;
 
 #[axum::debug_handler]
 #[cfg(feature = "reverse-proxy")]
@@ -156,13 +158,14 @@ where
     T: Clone + Send + Sync + 'static,
 {
     /// Just `new()`, nothing special
+    #[must_use]
     pub fn new() -> Self {
         Self {
             static_path: Vec::new(),
             port: 8080,
             forward: None,
             release_path: home_dir()
-                .unwrap_or_else(|| temp_dir())
+                .unwrap_or_else(temp_dir)
                 .join(format!(".{}_static_files", env!("CARGO_PKG_NAME"))),
             extra_layer: Vec::new(),
             host_routers: HashMap::new(),
@@ -174,8 +177,7 @@ where
 
     /// Specific server context data
     ///
-    /// This is similar to [axum middleware](https://docs.rs/axum/latest/axum/#middleware)
-    #[deprecated(note = "use state() instead, data() will be removed in future version")]
+    /// SOFT Deprecated, use `.state()` instead.
     #[must_use]
     pub fn data(mut self, data: T) -> Self
     where
@@ -270,7 +272,7 @@ where
     }
 
     /// Build up the router with fallbacks, static paths, and data extension.
-    /// Returns the configured SpaServer ready for state conversion and serving.
+    /// Returns the configured `SpaServer` ready for state conversion and serving.
     fn build_router<Root>(mut self, root: Option<Root>) -> Result<Self>
     where
         Root: SpaStatic,
@@ -332,7 +334,7 @@ where
         port: u16,
         config: Option<HttpsConfig>,
     ) -> Result<()> {
-        let addr = format!("0.0.0.0:{}", port).parse()?;
+        let addr = format!("0.0.0.0:{port}").parse()?;
         #[allow(unused_variables)]
         if let Some(config) = config {
             #[cfg(all(feature = "openssl", feature = "rustls"))]
@@ -345,10 +347,9 @@ where
                     rustls::crypto::aws_lc_rs::default_provider()
                         .install_default()
                         .map_err(|e| {
-                            std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                format!("install default crypto provider error: {e:?}"),
-                            )
+                            std::io::Error::other(format!(
+                                "install default crypto provider error: {e:?}"
+                            ))
                         })?;
                     let certificate = std::fs::read(config.certificate)?;
                     let private_key = std::fs::read(config.private_key)?;
@@ -492,7 +493,7 @@ impl SpaServer<()> {
         self.run_raw_stateless::<ApiOnly>(None, Some(config)).await
     }
 
-    /// Stateless run: Router<()> can be served directly without .with_state().
+    /// Stateless run: Router<()> can be served directly without `.with_state()`.
     async fn run_raw_stateless<Root>(
         self,
         root: Option<Root>,
@@ -697,6 +698,7 @@ pub trait SpaStatic: rust_embed::RustEmbed {
 }
 
 impl SpaStatic for ApiOnly {}
+#[allow(refining_impl_trait)]
 impl rust_embed::RustEmbed for ApiOnly {
     fn get(_file_path: &str) -> Option<rust_embed::EmbeddedFile> {
         unreachable!()

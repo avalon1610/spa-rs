@@ -346,7 +346,7 @@ mod digest {
         let opaque = rand_string(32);
 
         let www_authenticate =
-            format!(r#"Digest realm="{realm}",qop="auth",nonce="{nonce}",opaque="{opaque}""#,);
+            format!(r#"Digest realm="{realm}",qop="auth",nonce="{nonce}",opaque="{opaque}""#);
 
         {
             let mut nonce_list = nonces.lock();
