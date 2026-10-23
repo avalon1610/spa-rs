@@ -114,7 +114,7 @@ macro_rules! http_err {
 #[macro_export]
 macro_rules! http_bail {
     ($($args:tt)+) => {
-        return Err($crate::http_err!($($args)+));
+        return Err($crate::http_err!($($args)+))
     };
 }
 

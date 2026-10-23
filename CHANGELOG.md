@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-10-23
+
+### Fixed
+- `axum-help`: `http_bail!` no longer emits a trailing semicolon in its expansion, so it can be used in expression position (e.g. a `match` arm) without triggering `semicolon_in_expressions_from_non_local_macros` (rust-lang/rust#79813)
+
 ## [0.10.0] - 2026-06-03
 
 ### Added
