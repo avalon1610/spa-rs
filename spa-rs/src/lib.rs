@@ -70,13 +70,15 @@ use rand::{Rng, distributions::Alphanumeric, thread_rng};
 pub use rust_embed;
 use std::{
     any::type_name,
+    borrow::Cow,
     collections::HashMap,
     convert::Infallible,
-    env::{home_dir, temp_dir},
+    env::{current_exe, home_dir, temp_dir},
     fs::{self, create_dir_all},
     net::SocketAddr,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 use tower::{Layer, Service, util::ServiceExt as TowerServiceExt};
 use tower_http::{
@@ -110,7 +112,7 @@ where
     data: Option<T>,
     state: Option<T>,
     forward: Option<String>,
-    release_path: PathBuf,
+    release_path: Option<PathBuf>,
     extra_layer: Vec<ExtraLayerFn>,
     host_routers: HashMap<String, Router<T>>,
 }
@@ -165,11 +167,7 @@ where
             static_path: Vec::new(),
             port: 8080,
             forward: None,
-            release_path: home_dir().unwrap_or_else(temp_dir).join(format!(
-                ".{}_static_files_{}",
-                env!("CARGO_PKG_NAME"),
-                rand_string(8)
-            )),
+            release_path: None,
             extra_layer: Vec::new(),
             host_routers: HashMap::new(),
             router: Router::new(),
@@ -235,17 +233,20 @@ where
 
     /// static file release path in runtime
     ///
-    /// Default path is `$HOME/.[env!(CARGO_PKG_NAME)]_static_files_[random]`
-    /// (falling back to `/tmp` when `$HOME` is unavailable). The random suffix keeps
-    /// concurrently running instances of the same binary from clobbering each other's files.
+    /// Default path is `$HOME/.[executable name]_static_files_[hash]`, where the hash
+    /// is derived from the names and contents of the embedded files. Without a home
+    /// directory the directory goes to the system temp dir with a random suffix
+    /// instead, since a predictable name there could be pre-created by another local
+    /// user. The same binary therefore always releases to the same directory across
+    /// restarts, different applications never share one, and a rebuild with changed
+    /// assets gets a fresh directory.
     ///
-    /// Note: every `SpaServer::new()` creates a fresh directory and the library never
-    /// deletes it, so repeated runs leave `$HOME/.[env!(CARGO_PKG_NAME)]_static_files_*`
-    /// directories behind. Point this at a fixed path (or clean the directory yourself)
-    /// if that matters for your deployment.
+    /// Setting this to a fixed path disables that content addressing: files from
+    /// removed or renamed assets stay in the directory, and no cleanup happens.
+    /// The library never deletes release directories in either case.
     #[must_use]
     pub fn release_path(mut self, rp: impl Into<PathBuf>) -> Self {
-        self.release_path = rp.into();
+        self.release_path = Some(rp.into());
         self
     }
 
@@ -288,7 +289,11 @@ where
         Root: SpaStatic,
     {
         if let Some(root) = root {
-            let embeded_dir = root.release(self.release_path.clone())?;
+            let release_path = match self.release_path.take() {
+                Some(path) => path,
+                None => default_release_path::<Root>(),
+            };
+            let embeded_dir = root.release(release_path)?;
             let index_file = embeded_dir.clone().join("index.html");
 
             self.router = if let Some(ref addr) = self.forward {
@@ -679,32 +684,174 @@ macro_rules! spa_server_root {
 
 /// Used to release static file into temp dir in runtime.
 ///
+/// Extraction is atomic per file (write to a temporary file, then rename), so a
+/// process serving the directory never observes a partially written file. The
+/// directory is claimed with a marker file holding the identity of the embedded
+/// file set; when the marker matches and every file is present, a restart skips
+/// extraction entirely.
 pub trait SpaStatic: rust_embed::RustEmbed {
-    fn release(&self, release_path: PathBuf) -> Result<PathBuf> {
+    fn release(&self, release_path: PathBuf) -> Result<PathBuf>
+    where
+        Self: Sized,
+    {
         let target_dir = release_path;
-        if !target_dir.exists() {
-            create_dir_all(&target_dir)?;
+        create_dir_all(&target_dir)?;
+
+        let id = release_id::<Self>();
+        let marker = target_dir.join(RELEASE_MARKER);
+        if fs::read_to_string(&marker).is_ok_and(|existing| existing.trim() == id)
+            && Self::iter().all(|file| target_dir.join(file.as_ref()).is_file())
+        {
+            debug!("static files already released in {}", target_dir.display());
+            return Ok(target_dir);
         }
 
-        for file in Self::iter() {
-            if let Some(f) = Self::get(&file) {
-                if let Some(p) = std::path::Path::new(file.as_ref()).parent() {
-                    let parent_dir = target_dir.join(p);
-                    create_dir_all(parent_dir)?;
-                }
+        remove_stale_temp_files(&target_dir);
 
-                let path = target_dir.join(file.as_ref());
-                debug!("release static file: {}", path.display());
-                if let Err(e) = fs::write(path, f.data) {
-                    error!("static file {file} write error: {e:?}");
-                }
-            } else {
+        let mut failed = false;
+        for file in Self::iter() {
+            let Some(f) = Self::get(&file) else {
                 warn!("static file {file} not found");
+                continue;
+            };
+
+            let path = target_dir.join(file.as_ref());
+            debug!("release static file: {}", path.display());
+            if let Err(e) = write_atomic(&path, &target_dir, &f.data) {
+                error!("static file {file} write error: {e:?}");
+                failed = true;
             }
+        }
+
+        // Only claim the directory once every file landed; a marker written after a
+        // partial extraction would make the next start skip the missing files.
+        if failed {
+            let _ = fs::remove_file(&marker);
+        } else if let Err(e) = write_atomic(&marker, &target_dir, id.as_bytes()) {
+            error!("write release marker {} error: {e:?}", marker.display());
         }
 
         Ok(target_dir)
     }
+}
+
+/// Marker recording which set of embedded files a release directory holds.
+const RELEASE_MARKER: &str = ".spa-rs-release";
+
+/// Identity of the embedded file set: stable across restarts of the same build,
+/// different whenever any file name or content changes.
+fn release_id<Root: rust_embed::RustEmbed>() -> String {
+    release_id_of(Root::iter().map(|file| {
+        let hash = Root::get(&file).map_or([0; 32], |f| f.metadata.sha256_hash());
+        (file, hash)
+    }))
+}
+
+fn release_id_of(files: impl Iterator<Item = (Cow<'static, str>, [u8; 32])>) -> String {
+    let mut files: Vec<_> = files.collect();
+    files.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+
+    let mut ctx = md5::Context::new();
+    for (name, hash) in files {
+        ctx.consume(name.len().to_le_bytes());
+        ctx.consume(name.as_bytes());
+        ctx.consume(hash);
+    }
+
+    let hex = format!("{:x}", ctx.compute());
+    hex[..12].to_owned()
+}
+
+/// Default release directory: one stable directory per application *and* per
+/// embedded file set, so restarts reuse it while concurrent processes and
+/// unrelated applications never share one.
+///
+/// Without a home directory the directory is placed in the system temp dir and gets
+/// a random suffix instead: `/tmp` is shared between users, so a predictable name
+/// there could be pre-created by another local user (symlink or permission denial)
+/// before this process ever starts.
+fn default_release_path<Root: rust_embed::RustEmbed>() -> PathBuf {
+    let name = current_exe()
+        .ok()
+        .and_then(|exe| exe.file_stem().and_then(|s| s.to_str()).map(str::to_owned))
+        .unwrap_or_else(|| "spa".to_owned());
+    let id = release_id::<Root>();
+
+    match home_dir() {
+        Some(home) => home.join(release_dir_name(&name, &id)),
+        None => temp_dir().join(format!(
+            "{}-{}",
+            release_dir_name(&name, &id),
+            rand_string(8)
+        )),
+    }
+}
+
+/// Directory name for an application called `app` holding file set `id`.
+fn release_dir_name(app: &str, id: &str) -> String {
+    format!(".{app}_static_files_{id}")
+}
+
+/// Write `data` to `target` via a temporary file in `tmp_dir`, so a reader never
+/// observes a half-written file.
+fn write_atomic(target: &Path, tmp_dir: &Path, data: &[u8]) -> Result<()> {
+    if let Some(parent) = target.parent() {
+        create_dir_all(parent)?;
+    }
+
+    let tmp = tmp_dir.join(format!(".spa-rs-{}.tmp", rand_string(12)));
+    fs::write(&tmp, data)?;
+
+    // Windows cannot rename over an existing file; Unix rename replaces atomically.
+    if cfg!(windows) && target.exists() {
+        let _ = fs::remove_file(target);
+    }
+
+    if let Err(e) = fs::rename(&tmp, target) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e.into());
+    }
+
+    Ok(())
+}
+
+/// Drop temporary files left behind by an interrupted release.
+///
+/// Only files older than [`STALE_TEMP_AGE`] are touched: a younger one may belong to
+/// another process that is extracting right now.
+fn remove_stale_temp_files(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let age = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok());
+        if is_abandoned_temp_file(&entry.file_name(), age) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Temp files this crate writes are abandoned once they are older than this; a
+/// younger one may still be in flight in another process.
+const STALE_TEMP_AGE: Duration = Duration::from_secs(3600);
+
+/// Whether `name` is one of our temporary files and old enough to be reaped.
+///
+/// Unknown age (clock skew, unsupported metadata) is treated as fresh, so a live
+/// extraction is never deleted on a guess.
+fn is_abandoned_temp_file(name: &std::ffi::OsStr, age: Option<Duration>) -> bool {
+    let path = Path::new(name);
+    let is_ours = path.extension().is_some_and(|ext| ext == "tmp")
+        && path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|stem| stem.starts_with(".spa-rs-"));
+    is_ours && age.is_some_and(|age| age > STALE_TEMP_AGE)
 }
 
 impl SpaStatic for ApiOnly {}
@@ -727,4 +874,236 @@ fn rand_string(count: usize) -> String {
         .take(count)
         .map(char::from)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(files: &[(&'static str, [u8; 32])]) -> String {
+        release_id_of(
+            files
+                .iter()
+                .map(|(name, hash)| (Cow::Borrowed(*name), *hash)),
+        )
+    }
+
+    #[test]
+    fn release_id_is_stable_and_order_independent() {
+        let a = ("a.js", [1; 32]);
+        let b = ("index.html", [2; 32]);
+
+        assert_eq!(id(&[a, b]), id(&[a, b]));
+        assert_eq!(id(&[a, b]), id(&[b, a]));
+        assert_eq!(id(&[a, b]).len(), 12);
+    }
+
+    #[test]
+    fn release_id_changes_with_name_or_content() {
+        let base = id(&[("a.js", [1; 32])]);
+
+        assert_ne!(base, id(&[("a.js", [2; 32])]), "content change");
+        assert_ne!(base, id(&[("b.js", [1; 32])]), "name change");
+        assert_ne!(
+            base,
+            id(&[("a.js", [1; 32]), ("b.js", [3; 32])]),
+            "extra file"
+        );
+    }
+
+    #[test]
+    fn release_id_does_not_collide_on_shifted_boundaries() {
+        // Without length prefixes `ab` + `c` hashes the same bytes as `a` + `bc`.
+        assert_ne!(
+            id(&[("ab", [0; 32]), ("c", [1; 32])]),
+            id(&[("a", [0; 32]), ("bc", [1; 32])])
+        );
+    }
+
+    #[test]
+    fn default_release_path_is_stable_and_app_specific() {
+        let first = default_release_path::<TestFiles>();
+        let second = default_release_path::<TestFiles>();
+        assert_eq!(first, second, "restarting the same app must reuse its dir");
+
+        let release = release_id::<TestFiles>();
+        let name = release_dir_name("myapp", &release);
+        assert_eq!(name, format!(".myapp_static_files_{release}"));
+        assert_ne!(
+            name,
+            release_dir_name("otherapp", &release),
+            "apps must not share"
+        );
+        assert_ne!(
+            name,
+            release_dir_name("myapp", &id(&[("index.html", [9; 32])])),
+            "new assets must not reuse a stale dir"
+        );
+    }
+
+    #[test]
+    fn release_reuses_directory_across_calls() {
+        let dir = temp_dir().join(format!("spa-rs-test-{}", rand_string(12)));
+        let _cleanup = Cleanup(dir.clone());
+
+        TestFiles.release(dir.clone()).unwrap();
+        let marker = fs::read_to_string(dir.join(RELEASE_MARKER)).unwrap();
+        let first_mtime = fs::metadata(dir.join("index.html"))
+            .unwrap()
+            .modified()
+            .unwrap();
+
+        TestFiles.release(dir.clone()).unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.join(RELEASE_MARKER)).unwrap(),
+            marker
+        );
+        assert_eq!(
+            fs::metadata(dir.join("index.html"))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            first_mtime,
+            "second release must not rewrite already-released files"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("index.html")).unwrap(),
+            "test index"
+        );
+    }
+
+    #[test]
+    fn release_repairs_directory_with_wrong_marker() {
+        let dir = temp_dir().join(format!("spa-rs-test-{}", rand_string(12)));
+        let _cleanup = Cleanup(dir.clone());
+
+        create_dir_all(&dir).unwrap();
+        fs::write(dir.join(RELEASE_MARKER), "stale-id").unwrap();
+        TestFiles.release(dir.clone()).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dir.join(RELEASE_MARKER)).unwrap(),
+            release_id::<TestFiles>()
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("index.html")).unwrap(),
+            "test index"
+        );
+    }
+
+    #[test]
+    fn release_repairs_directory_with_missing_file() {
+        let dir = temp_dir().join(format!("spa-rs-test-{}", rand_string(12)));
+        let _cleanup = Cleanup(dir.clone());
+
+        TestFiles.release(dir.clone()).unwrap();
+        fs::remove_file(dir.join("index.html")).unwrap();
+        TestFiles.release(dir.clone()).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dir.join("index.html")).unwrap(),
+            "test index"
+        );
+    }
+
+    #[test]
+    fn temp_files_are_only_reaped_once_abandoned() {
+        let name = std::ffi::OsStr::new(".spa-rs-abc123.tmp");
+
+        assert!(!is_abandoned_temp_file(name, Some(Duration::from_secs(60))));
+        assert!(!is_abandoned_temp_file(name, Some(STALE_TEMP_AGE)));
+        assert!(
+            !is_abandoned_temp_file(name, None),
+            "unknown age must not be guessed at"
+        );
+        assert!(is_abandoned_temp_file(name, Some(STALE_TEMP_AGE * 2)));
+    }
+
+    #[test]
+    fn temp_file_match_ignores_foreign_files() {
+        let old = Some(STALE_TEMP_AGE * 2);
+
+        assert!(!is_abandoned_temp_file(
+            std::ffi::OsStr::new("index.html"),
+            old
+        ));
+        assert!(!is_abandoned_temp_file(
+            std::ffi::OsStr::new("app.tmp"),
+            old
+        ));
+        assert!(!is_abandoned_temp_file(
+            std::ffi::OsStr::new(".spa-rs-release"),
+            old
+        ));
+    }
+
+    #[test]
+    fn release_keeps_in_flight_temp_file() {
+        let dir = temp_dir().join(format!("spa-rs-test-{}", rand_string(12)));
+        let _cleanup = Cleanup(dir.clone());
+
+        create_dir_all(&dir).unwrap();
+        let in_flight = dir.join(".spa-rs-active.tmp");
+        fs::write(&in_flight, "partial").unwrap();
+
+        TestFiles.release(dir.clone()).unwrap();
+
+        assert!(
+            in_flight.exists(),
+            "a fresh temp file may belong to a concurrent extraction"
+        );
+    }
+
+    #[test]
+    fn release_creates_nested_directories() {
+        let dir = temp_dir().join(format!("spa-rs-test-{}", rand_string(12)));
+        let _cleanup = Cleanup(dir.clone());
+
+        TestFiles.release(dir.clone()).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dir.join("assets/app.js")).unwrap(),
+            "nested"
+        );
+    }
+
+    #[test]
+    fn concurrent_release_produces_complete_files() {
+        let dir = temp_dir().join(format!("spa-rs-test-{}", rand_string(12)));
+        let _cleanup = Cleanup(dir.clone());
+
+        std::thread::scope(|s| {
+            for _ in 0..8 {
+                let dir = dir.clone();
+                s.spawn(move || TestFiles.release(dir).unwrap());
+            }
+        });
+
+        assert_eq!(
+            fs::read_to_string(dir.join("index.html")).unwrap(),
+            "test index"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("assets/app.js")).unwrap(),
+            "nested"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join(RELEASE_MARKER)).unwrap(),
+            release_id::<TestFiles>()
+        );
+    }
+
+    struct Cleanup(PathBuf);
+
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[derive(rust_embed::RustEmbed)]
+    #[folder = "tests/fixtures"]
+    struct TestFiles;
+
+    impl SpaStatic for TestFiles {}
 }

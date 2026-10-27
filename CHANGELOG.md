@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.10.2] - 2026-10-27
+
+### Fixed
+- `spa-rs`: Default release directory is now derived from the executable name and a hash of the embedded file set (`$HOME/.{exe}_static_files_{hash}`) instead of a random suffix. Restarting the same binary reuses its directory, different applications never share one, and a rebuild with changed assets gets a fresh directory
+- `spa-rs`: Extracted files are written to a temporary file and renamed into place, so a concurrently running instance never serves a partially written file
+- `spa-rs`: A release marker records which file set a directory holds; when it matches and every file is present, extraction is skipped. Directories left incomplete by an interrupted run are repaired on the next start
+- `spa-rs`: Leftover `.spa-rs-*.tmp` files from an interrupted extraction are removed, but only once they are an hour old, so a concurrent process's in-flight temporary file is never deleted
+- `spa-rs`: Without `$HOME`, the release directory is placed in the system temp dir with a random suffix, since a predictable name in the shared temp dir could be pre-created by another local user
+
+### Changed
+- `spa-rs`: `SpaServer::release_path()` now overrides the derived default (`release_path` is stored as `Option<PathBuf>`); the derived path is only computed when it is unset
+
 ## [0.10.1] - 2026-10-27
 
 ### Fixed
