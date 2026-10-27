@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.10.1] - 2026-10-27
+
+### Fixed
+- `spa-rs`: Default release directory now gets a random suffix (`$HOME/.{pkg}_static_files_{random}`) so multiple concurrently running instances no longer write over each other's extracted static files
+- `spa-rs`: `rand_string` is now shared between the digest auth module and the release path instead of being duplicated
+
+### Known limitations
+- `spa-rs`: release directories are never cleaned up, so each run leaves a new `$HOME/.{pkg}_static_files_{random}` directory behind; set `release_path()` to a fixed path if accumulation matters (documented on `SpaServer::release_path()`)
+
 ## [0.3.1] - 2026-10-23
 
 ### Fixed

@@ -229,8 +229,9 @@ mod digest {
         response::{IntoResponse, Response},
     };
     use parking_lot::Mutex;
-    use rand::{Rng, distributions::Alphanumeric, thread_rng};
     use std::{collections::VecDeque, fmt::Debug, sync::Arc};
+
+    use crate::rand_string;
 
     #[derive(Default, Debug)]
     pub(super) struct Authorization {
@@ -363,13 +364,5 @@ mod digest {
             msg.into(),
         )
             .into_response()
-    }
-
-    fn rand_string(count: usize) -> String {
-        thread_rng()
-            .sample_iter(Alphanumeric)
-            .take(count)
-            .map(char::from)
-            .collect()
     }
 }

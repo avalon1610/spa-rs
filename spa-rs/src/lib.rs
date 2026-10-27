@@ -66,6 +66,7 @@ use axum_server::tls_openssl::OpenSSLConfig;
 use axum_server::tls_rustls::RustlsConfig;
 use futures_util::future::BoxFuture;
 use log::{debug, error, warn};
+use rand::{Rng, distributions::Alphanumeric, thread_rng};
 pub use rust_embed;
 use std::{
     any::type_name,
@@ -164,9 +165,11 @@ where
             static_path: Vec::new(),
             port: 8080,
             forward: None,
-            release_path: home_dir()
-                .unwrap_or_else(temp_dir)
-                .join(format!(".{}_static_files", env!("CARGO_PKG_NAME"))),
+            release_path: home_dir().unwrap_or_else(temp_dir).join(format!(
+                ".{}_static_files_{}",
+                env!("CARGO_PKG_NAME"),
+                rand_string(8)
+            )),
             extra_layer: Vec::new(),
             host_routers: HashMap::new(),
             router: Router::new(),
@@ -232,7 +235,14 @@ where
 
     /// static file release path in runtime
     ///
-    /// Default path is `/tmp/[env!(CARGO_PKG_NAME)]_static_files`
+    /// Default path is `$HOME/.[env!(CARGO_PKG_NAME)]_static_files_[random]`
+    /// (falling back to `/tmp` when `$HOME` is unavailable). The random suffix keeps
+    /// concurrently running instances of the same binary from clobbering each other's files.
+    ///
+    /// Note: every `SpaServer::new()` creates a fresh directory and the library never
+    /// deletes it, so repeated runs leave `$HOME/.[env!(CARGO_PKG_NAME)]_static_files_*`
+    /// directories behind. Point this at a fixed path (or clean the directory yourself)
+    /// if that matters for your deployment.
     #[must_use]
     pub fn release_path(mut self, rp: impl Into<PathBuf>) -> Self {
         self.release_path = rp.into();
@@ -710,3 +720,11 @@ impl rust_embed::RustEmbed for ApiOnly {
 }
 
 struct ApiOnly;
+
+fn rand_string(count: usize) -> String {
+    thread_rng()
+        .sample_iter(Alphanumeric)
+        .take(count)
+        .map(char::from)
+        .collect()
+}
